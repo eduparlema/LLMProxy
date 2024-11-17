@@ -1,9 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h> 
-#include "cache.h"
 #include "hashmap.h"
-#define DELETED_NODE ((cache_node*)-1)  // Used for linear probing
+#define DELETED_NODE ((void*)-1)  // Used for linear probing
 
 
 // hashfunction (djb2 algorithm: http://www.cse.yorku.ca/~oz/hash.html)
@@ -19,38 +18,38 @@ unsigned long hash_function(const char *str, int size) {
 Hashmap* create_hashmap(int size) {
     Hashmap *hashmap = (Hashmap *)malloc(sizeof(hashmap));
     hashmap->keys = (char **)calloc(size, sizeof(char *));  
-    hashmap->values = (cache_node **)calloc(size, sizeof(cache_node *));
+    hashmap->values = (void **)calloc(size, sizeof(void *));
     hashmap->size = size;
     return hashmap;
 }
 
-void insert_into_hashmap(Hashmap *hashmap, char *filename, cache_node *node) {
-    unsigned long index = hash_function(filename, hashmap->size);
+void insert_into_hashmap(Hashmap *hashmap, char *key, void *value) {
+    unsigned long index = hash_function(key, hashmap->size);
 
     // Linear probing to handle collisions 
     while (hashmap->keys[index] != NULL && hashmap->values[index] != DELETED_NODE){
-        if (strcmp(hashmap->keys[index], filename) == 0) {
+        if (strcmp(hashmap->keys[index], key) == 0) {
             // If key already exists, replace value 
-            hashmap->values[index] = node;
+            hashmap->values[index] = value;
             return;
         }
         index = (index + 1) % hashmap->size;
     }
 
     // Insert the new (key, value) pair
-    hashmap->keys[index] = strdup(filename); 
-    hashmap->values[index] = node;
+    hashmap->keys[index] = strdup(key); 
+    hashmap->values[index] = value;
 }
 
-cache_node* get_from_hashmap(Hashmap *hashmap, char *filename) {
-    unsigned long index = hash_function(filename, hashmap->size);
+void* get_from_hashmap(Hashmap *hashmap, char *key) {
+    unsigned long index = hash_function(key, hashmap->size);
     unsigned long original_index = index;  
     unsigned long probed_count = 0;        
     
     // Linear probing to handle collisions
     while (hashmap->keys[index] != NULL) {
         // Check if the current index matches the desired key and is not a deleted node
-        if (hashmap->values[index] != DELETED_NODE && strcmp(hashmap->keys[index], filename) == 0) {
+        if (hashmap->values[index] != DELETED_NODE && strcmp(hashmap->keys[index], key) == 0) {
             return hashmap->values[index];
         }
         

@@ -4,9 +4,11 @@
 #include <stdbool.h>
 #include <time.h>
 
+#define MAX_URL_LENGTH 100
+
 // Definition of the cache_node used as the double linked list 
 typedef struct cache_node {
-    char url[100]; 
+    char url[MAX_URL_LENGTH]; 
     int max_age;
     struct timespec expiration_time; // max_age + t, where t is the time since the Epoch
     char *response_content;

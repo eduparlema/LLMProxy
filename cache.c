@@ -225,7 +225,7 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
     // create a new cache_node 
     cache_node *new_node = (cache_node*)malloc(sizeof(cache_node));
     new_node->response_content = NULL;
-    strncpy(new_node->url, url, 100);
+    strncpy(new_node->url, url, MAX_URL_LENGTH);
     new_node->max_age = max_age;
     clock_gettime(CLOCK_REALTIME, &new_node->expiration_time); // Used to find expiration_time
     new_node->expiration_time.tv_sec += max_age;
