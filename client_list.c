@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include "client_list.h"
+#include "hashmap.h"
 
 #define KB (1024)
 #define MB (KB * KB)
@@ -48,6 +49,7 @@ client_node *create_client_node(int socketfd) {
         exit(EXIT_FAILURE);
     }
     node->socketfd = socketfd;
+    memset(&node->IP_addr, 0, INET_ADDRSTRLEN);
     node->last_activity = time(NULL);
     memset(&node->request_url, 0, MAX_URL_LENGTH);
     node->request_buffer = (char *) malloc(MAX_REQUEST_SIZE);
@@ -67,4 +69,30 @@ void free_client_node(client_node *node) {
         node->request_buffer = NULL;
     }
     free(node);
+}
+
+void add_client(client_list *client_list, client_node *client) {
+    client_node *prev_node = client_list->tail->prev;
+    client_list->tail->prev = client;
+    client->next = client_list->tail;
+    client->prev = prev_node;
+    prev_node->next = client;
+}
+
+void remove_client(client_list *client_list, client_node *client) {
+    client_node *prev_node = client->prev;
+    client_node *next_node = client->next; 
+    prev_node->next = next_node;
+    next_node->prev = prev_node;
+}
+
+time_t get_min_time(client_list *client_list) {
+    client_node *current = client_list->head->next;
+    time_t result = 0;
+    while (current != NULL && current != client_list->tail) {
+        time_t elapsed_time = time(NULL) - current->last_activity;
+        result = (result > elapsed_time) ? result : elapsed_time;
+        current = current->next;
+    }
+    return DEFAULT_TIMEOUT - result;
 }

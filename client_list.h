@@ -10,13 +10,13 @@
 
 #include "cache.h"
 
-#define MAX_PACKET_SIZE 400
-#define MAX_CLIENTID_LENGTH 20
+#define DEFAULT_TIMEOUT 60
 
 // Note: Since TCP ensures that we receive the data in order, a client can 
 // have at most one incomplete message at a time.
 typedef struct client_node {
     int socketfd;
+    char IP_addr[INET_ADDRSTRLEN];
     time_t last_activity; // helpful to handle timeouts
     char request_url[MAX_URL_LENGTH];
     char *request_buffer;

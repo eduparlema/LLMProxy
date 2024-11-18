@@ -9,7 +9,7 @@
     Starts the proxy so that it is actively listening at portno 
    portno - port number
 */
-void start_proxy(int portno);
+int start_proxy(int portno);
 
 /* create_server_socket
     Creates a socket to communicate with the client. It is useful 
@@ -71,6 +71,6 @@ int handle_request();
     Gets IP address from a connected socketfd
    socketfd - socket connected to proxy
 */
-char *get_ip(int socketfd);
+int get_ip(client_list *cli_list, int socketfd, char *IP_addr, size_t buffer_size);
 
 #endif 
