@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "hashmap.h"
+#include "hashmap_cache.h"
 #include "cache.h"
 
 // Helper functions for the double linked list 
@@ -32,7 +32,7 @@ void remove_node(cache *cache, cache_node *node) {
 
 bool is_stale(cache *cache, char *url) {
     // get the node from the hashmap
-    cache_node *node = get_from_hashmap(cache->hashmap, url);
+    cache_node *node = get_from_hashmap_cache(cache->hashmap, url);
 
     struct timespec current_time;
     // Get the current time 
@@ -49,12 +49,12 @@ bool is_stale(cache *cache, char *url) {
 }
 
 bool in_cache(cache *cache, char *url) {
-    return (get_from_hashmap(cache->hashmap, url) != NULL);
+    return (get_from_hashmap_cache(cache->hashmap, url) != NULL);
 }
 
 // Called only if we know that url is in cache
 cache_node *get_node(cache *cache, char *url) {
-    return get_from_hashmap(cache->hashmap, url);
+    return get_from_hashmap_cache(cache->hashmap, url);
 }
 
 void update_oldest_node(cache *cache) {
@@ -95,7 +95,7 @@ cache* create_cache(int size) {
     cache *new_cache = (cache*)malloc(sizeof(cache));
 
     // initialize the hashmap 
-    new_cache->hashmap = create_hashmap(size);
+    new_cache->hashmap = create_hashmap_cache(size);
 
     // allocate and initialize sentinel nodes 
     new_cache->head = (cache_node*)malloc(sizeof(cache_node));
@@ -179,7 +179,7 @@ void print_cache_nodes(cache *cache) {
 }
 
 void put(cache *cache, char *url, int max_age, char *content, ssize_t content_size) {
-    cache_node *existing_node = get_from_hashmap(cache->hashmap, url);
+    cache_node *existing_node = get_from_hashmap_cache(cache->hashmap, url);
     // If it reacher here then node must be stale so refresh
     if (existing_node != NULL) {
         // If node already exists, just update stuff if is not a retrieval!
@@ -205,7 +205,7 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
         if (cache->oldest_node && is_stale(cache, cache->oldest_node->url)) {
             // Evict the stale oldest_node 
             evicted_node = cache->oldest_node;
-            remove_from_hashmap(cache->hashmap, evicted_node->url);  // Remove from hashmap
+            remove_from_hashmap_cache(cache->hashmap, evicted_node->url);  // Remove from hashmap
             remove_node(cache, evicted_node);  // Remove from linked list
         
             printf("Evicted oldest stale url %s\n!", evicted_node->url);
@@ -213,7 +213,7 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
         } else {
             // Evict LRU node since no stale nodes present
             evicted_node = cache->head->next; 
-            remove_from_hashmap(cache->hashmap, evicted_node->url);
+            remove_from_hashmap_cache(cache->hashmap, evicted_node->url);
             remove_node(cache, evicted_node);
             printf("Evicted LRU url %s\n!", evicted_node->url);
         }
@@ -234,7 +234,7 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
     add_content_to_cache(new_node, content, content_size);
 
     // Add the new node to the hashmap 
-    insert_into_hashmap(cache->hashmap, url, new_node);
+    insert_into_hashmap_cache(cache->hashmap, url, new_node);
 
     // Add node to double linked list 
     add_node(cache, new_node);
@@ -252,7 +252,7 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
 ssize_t get(cache* cache, char *url, char *content_buffer) {
     // only calling get() if node is in cache and not stale
     printf("Getting url %s\n", url);
-    cache_node *node = get_from_hashmap(cache->hashmap, url);
+    cache_node *node = get_from_hashmap_cache(cache->hashmap, url);
 
     // remove and add node so it is to the left of the tail 
     remove_node(cache, node);
@@ -282,7 +282,7 @@ void free_cache(cache* cache) {
     free(cache->head);
     free(cache->tail);
     // Free the hashmap
-    free_hashmap(cache->hashmap);
+    free_hashmap_cache(cache->hashmap);
 
     // Free the cache structure itself
     free(cache);

@@ -13,7 +13,7 @@
 #include "proxy.h"
 #include "cache.h"
 #include "client_list.h"
-#include "hashmap.h"
+#include "hashmap_client.h"
 
 #define KB (1024)
 #define MB (KB * KB)
@@ -27,8 +27,6 @@
 #define MAX_CLIENTS 541 // Max number of clients
 
 #define ERR_HOST_NOT_RESOLVED -2
-
-// TODO: FIX HASHMAP ISSUE (UNNECESSARY HASHMAP)
 
 int master_socketfd; // master socket
 int server_socketfd; // socket established to communicate with server
@@ -100,47 +98,6 @@ int create_client_socket(struct sockaddr_in server_addr, int portno, char *hostn
     return sockfd;
 }
 
-size_t read_message(int socketfd, char *buffer, int buffer_size) {
-    int nbytes = read(socketfd, buffer, buffer_size);
-    if (nbytes < 0) {
-        perror("ERROR reading");
-        return -1;
-    } else if (nbytes == 0) {
-        printf("Connection closed by the client %d\n", socketfd);
-        return -1;
-    }
-    return nbytes;
-}
-
-// int get_ip(int socketfd, char *IP_addr, size_t buffer_size) {
-//     // TODO: Add some error checking
-//     struct sockaddr_in addr;
-//     socklen_t len = sizeof(addr);
-
-//     // get the address (IP + port)
-//     if (getpeername(socketfd, (struct sockaddr *)&addr, &len) == -1) {
-//         perror("getpeername failed");
-//         // TODO: Invoke a error handling to remove that fd from the set 
-//         // and continue the loop
-//         exit(EXIT_FAILURE); // exiting for now
-//     }
-//     // convert IP to a string
-//     inet_ntop(AF_INET, &(addr.sin_addr), IP_addr, buffer_size);
-//     return 0;
-// }
-
-int get_ip(client_list *cli_list, int socketfd, char *IP_addr, size_t buffer_size) {
-    client_node *current = cli_list->head->next;
-    while (current != NULL && current != cli_list->tail) {
-        if (current->socketfd == socketfd) {
-            strncpy(IP_addr, current->IP_addr, INET_ADDRSTRLEN);
-            return 0;
-        }
-        current = current->next;
-    }
-    return -1;
-}
-
 int handle_request_buffer(char *request_buffer, int buffer_size, client_node *client) {
     size_t remaining_space = MAX_REQUEST_SIZE - client->bytes_received - 1;
     if (buffer_size > remaining_space) {
@@ -164,26 +121,24 @@ int handle_request_buffer(char *request_buffer, int buffer_size, client_node *cl
     return 0; //incomplete header
 }
 
-void close_client_connection(int socketfd, fd_set *master_set, client_list *cli_list, 
-                                Hashmap *clilist_hashmap, char *IP_addr) {
-    close(socketfd); // close socket
-    if (FD_ISSET(socketfd, master_set)) {
-        FD_CLR(socketfd, master_set); // remove from set
+void close_client_connection(client_node *client, fd_set *master_set, client_list *cli_list,
+                                hashmap_client *clilist_hashmap) {
+    close(client->socketfd);
+    if (FD_ISSET(client->socketfd, master_set)) {
+        FD_CLR(client->socketfd, master_set);
     }
-    client_node *client = get_from_hashmap(clilist_hashmap, IP_addr);
     remove_client(cli_list, client);
-    remove_from_hashmap(clilist_hashmap, IP_addr);
+    remove_from_hashmap_client(clilist_hashmap, client->socketfd);
     free_client_node(client);
 }
 
-void check_timeout(fd_set *master_set, Hashmap *hashmap, client_list *cli_list) {
+void check_timeout(fd_set *master_set, hashmap_client *hashmap, client_list *cli_list) {
     client_node *current = cli_list->head->next;
     while (current != NULL && current != cli_list->tail) {
         if ((time(NULL) - current->last_activity) >= DEFAULT_TIMEOUT) {
             char IP_addr[INET_ADDRSTRLEN];
-            get_ip(cli_list, current->socketfd, IP_addr, INET_ADDRSTRLEN);
-            printf("No request from client with IP %s\n", IP_addr);
-            close_client_connection(current->socketfd, master_set, cli_list, hashmap, IP_addr);
+            printf("No request from client with IP %s\n", current->IP_addr);
+            close_client_connection(current, master_set, cli_list, hashmap);
         }
         current = current->next;
     }
@@ -262,7 +217,7 @@ void modify_url(char *original_url, char *modified_url, int port) {
     char *slash_pos = strchr(path_start, '/');
 
     // Construct the port string
-    char port_str[10];
+    char port_str[PORT_SIZE];
     snprintf(port_str, sizeof(port_str), ":%d", port);
 
     if (slash_pos) {
@@ -280,6 +235,10 @@ void modify_url(char *original_url, char *modified_url, int port) {
 
 int get_url(char *header_buffer, char *url, int port) {
     char *get_line;
+
+    printf("<<<<<<<\n");
+    printf("\nThis is the header: %s\n", header_buffer);
+    printf("<<<<<<<\n");
     
     get_line = strstr(header_buffer, "HEAD ");
     if (get_line) {
@@ -295,14 +254,13 @@ int get_url(char *header_buffer, char *url, int port) {
     }
 
     // Find the end of the header line
-    const char *end_of_line = strpbrk(get_line, "\r\n");
+    char *end_of_line = strchr(get_line, '\r');
     if (end_of_line == NULL) {
-        perror("INVALID HTTP: Host header format!\n");
-        return -1; // Invalid HTTP
+        end_of_line = strchr(end_of_line, '\n');
     }
 
-    size_t url_length = (size_t) (end_of_line - get_line);
-    
+    ssize_t url_length = end_of_line ? (ssize_t) (end_of_line - get_line) : strlen(get_line);
+
     strncpy(url, get_line, url_length);
     url[url_length] = '\0'; // Null-terminate the URL
 
@@ -353,8 +311,8 @@ ssize_t read_from_server(int socketfd, char *buffer, ssize_t buffer_size) {
         total_bytes += bytes_read;
 
         printf("Bytes read so far: %d\n", total_bytes);
-        printf("Buffer size: %d, bytes read: %d\n", buffer_size, bytes_read);
-        printf("buffer_size - total_bytes - 1: %d\n", buffer_size - total_bytes - 1);
+        // printf("Buffer size: %d, bytes read: %d\n", buffer_size, bytes_read);
+        // printf("buffer_size - total_bytes - 1: %d\n", buffer_size - total_bytes - 1);
 
         if (!header_received) {
             buffer[total_bytes] = '\0'; // Null terminate the header
@@ -439,30 +397,23 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
         // get the content from the cache, no need to go to the server
         response_size = get(cache, url, response_buffer);
 
-        // edit response header
+        /* edit response header */ //TODO: IMPROVE THIS!
         cache_node *node = get_node(cache, url);
-
         // get current time
         struct timespec current_time;
         clock_gettime(CLOCK_REALTIME, &current_time);
-
         // get time when node was inserted into cache
         long time_insrted = node->expiration_time.tv_sec - node->max_age;
-
         // get age
         long age = current_time.tv_sec - time_insrted;
-
         // make it into a string
         char age_value[20]; 
         snprintf(age_value, sizeof(age_value), "%ld", age);
-
         char *copy_response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate memory for the copy
         if (copy_response_buffer == NULL) {
             perror("Failed to allocate memory for copy of response_buffer");
         }
-
         memcpy(copy_response_buffer, response_buffer, MAX_RESPONSE_SIZE);
-
         ssize_t age_line_length = add_age_to_header(copy_response_buffer, response_size, age_value);
 
         // simple forward response to the client
@@ -499,7 +450,6 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
             perror("ERROR writing to the server");
             return -1;
         }
-
         printf("Request forwarded to the server!\n");
 
         // Read response from the server
@@ -522,10 +472,11 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
             perror("ERROR writing to client\n");
             return -1;
         }
+        free(response_buffer);
     }
-    free(response_buffer);
+    // reset the partial request buffer from client
+    memset(client->request_buffer, 0, sizeof(client->request_buffer));
 }
-
 
 int start_proxy(int portno) {
     /***************  Proxy acts as a SERVER ***************/
@@ -536,7 +487,7 @@ int start_proxy(int portno) {
         return -1;
     }
 
-    // Initialize variables useful variables for select()
+    // Initialize variables for select()
     struct sockaddr_in client_addr;
     socklen_t client_len;
 
@@ -551,8 +502,8 @@ int start_proxy(int portno) {
     // Initialize client_list
     client_list *cli_list = create_client_list();
     // Initialize client list hashmap for faste lookups
-    // (key, value) -> (IP address, client_node)
-    Hashmap *clilist_hashmap = create_hashmap(MAX_CLIENTS);
+    // (key, value) -> (socketfd, client_node)
+    hashmap_client *clilist_hashmap = create_hashmap_client(MAX_CLIENTS);
 
     char *request_buffer; // buffer to store the request from clients
 
@@ -560,6 +511,7 @@ int start_proxy(int portno) {
 
     time_t min_time_until_expiration;
     struct timeval timeout;
+
     while (1) {
         min_time_until_expiration = get_min_time(cli_list);
         timeout.tv_sec = min_time_until_expiration;
@@ -596,53 +548,59 @@ int start_proxy(int portno) {
                         perror("accept");
                         exit(EXIT_FAILURE);
                     }
-                    // Get the IP address (key of hashmap)
-                    char IP_addr[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &(client_addr.sin_addr), IP_addr, INET_ADDRSTRLEN);
 
-                    printf("Accepted request from client with IP %s and fd %hd.\n",
-                            IP_addr, client_socketfd);
+                    printf("Accepted the request from the client with IP %s and fd %hd.\n", 
+                                inet_ntoa(client_addr.sin_addr), client_socketfd);
                     FD_SET(client_socketfd, &master_set); // Add to set
                     // update fd_max
                     fd_max = (client_socketfd > fd_max) ? client_socketfd : fd_max;
-
                     // add to hashmap and list
-                    if (get_from_hashmap(clilist_hashmap, IP_addr) == NULL) {
+                    if (get_from_hashmap_client(clilist_hashmap, client_socketfd) == NULL) {
                         // add if the IP address is not in the map
-                        printf("Added client with IP address %s to hashmap!\n", IP_addr);
+                        printf("Added client with fd %d to hashmap!\n", client_socketfd);
                         client_node *node = create_client_node(client_socketfd);
-                        strncpy(node->IP_addr, IP_addr, INET_ADDRSTRLEN);
-                        insert_into_hashmap(clilist_hashmap, IP_addr, node);
+                        strncpy(node->IP_addr, inet_ntoa(client_addr.sin_addr), INET_ADDRSTRLEN);
+                        insert_into_hashmap_client(clilist_hashmap, client_socketfd, node);
                         add_client(cli_list, node);
                     }
                 } else {
-                    printf("Request arriving from client with fd: %d!\n");
-                    char IP_addr[INET_ADDRSTRLEN];
-                    get_ip(cli_list, i, IP_addr, INET_ADDRSTRLEN);
-                    client_node *client = get_from_hashmap(clilist_hashmap, IP_addr);
+                    printf("Request arriving from client with fd: %d!\n", i);
+                    client_node *client = get_from_hashmap_client(clilist_hashmap, i);
                     if (client == NULL) {
                         // sanity check
-                        printf("ERROR: client with IP %s, not in hashmap!\n", IP_addr);
+                        printf("ERROR: client with IP %s, not in hashmap!\n", client->IP_addr);
+                        exit(EXIT_FAILURE);
                     }
-                    printf("A client with IP address %s is sending a request!\n", IP_addr);
+                    printf("A client with IP address %s and fd %d is sending a request!\n", client->IP_addr, i);
                     // Refresh its timeout time
                     client->last_activity = time(NULL);
                     // First read everything into a buffer
                     request_buffer = (char *) malloc(MAX_REQUEST_SIZE);
-                    int nbytes = read_message(client->socketfd, request_buffer, MAX_REQUEST_SIZE);
-                    if (nbytes < 0) {
-                        close_client_connection(i, &master_set, cli_list, clilist_hashmap, IP_addr);
-                        printf("ERROR reading, removing client\n");
-                        continue; 
+                    int nbytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE);
+                    if (nbytes <= 0) {
+                        if (nbytes < 0) {
+                            perror("ERROR reading");
+                            close(client->socketfd);
+                        } 
+                        if (nbytes == 0) {
+                            printf("Connection closed by client %d!\n", client->socketfd);
+                        }
+                        if (FD_ISSET(client->socketfd, &master_set)) {
+                            FD_CLR(client->socketfd, &master_set);
+                        }
+                        remove_client(cli_list, client);
+                        remove_from_hashmap_client(clilist_hashmap, client->socketfd);
+                        free_client_node(client);
+                        continue;
                     }
                     // handle request buffer
                     if (handle_request_buffer(request_buffer, nbytes, client) < 0) {
-                        close_client_connection(i, &master_set, cli_list, clilist_hashmap, IP_addr);
+                        close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                     }
                     if (client->header_received) {
                         printf("Complete header received!\n");
                         if (handle_request(client, i, cache) < 0) {
-                            close_client_connection(i, &master_set, cli_list, clilist_hashmap, IP_addr);
+                            close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                         }
                     } else {
                         printf("Partial header received!\n");
@@ -653,10 +611,9 @@ int start_proxy(int portno) {
         }
         printf("\nThe size of the cache is: %d\n", cache->count);
         print_cache_nodes(cache);
-
     }
     close(master_socketfd);
     free_cache(cache);
-    free_hashmap(clilist_hashmap);
+    free_hashmap_client(clilist_hashmap);
     free_client_list(cli_list);
 }

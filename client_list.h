@@ -10,7 +10,7 @@
 
 #include "cache.h"
 
-#define DEFAULT_TIMEOUT 60
+#define DEFAULT_TIMEOUT 600
 
 // Note: Since TCP ensures that we receive the data in order, a client can 
 // have at most one incomplete message at a time.
@@ -35,7 +35,7 @@ typedef struct client_list {
     client_node *tail;
 } client_list;
 
-typedef struct Hashmap Hashmap;
+typedef struct hashmap_client hashmap_client;
 
 client_list *create_client_list();
 
@@ -47,6 +47,6 @@ void remove_client(client_list *client_list, client_node *client);
 
 time_t get_min_time(client_list *client_list);
 
-void check_timeout(fd_set *master_set, Hashmap *hashmap, client_list *client_list);
+void check_timeout(fd_set *master_set, hashmap_client *hashmap, client_list *client_list);
 
 #endif 

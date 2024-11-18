@@ -65,12 +65,6 @@ int handle_request_buffer(char *request_buffer, int buffer_len, client_node *cli
    buffer_len data we read fom the read() call to the socket
    client - client node of the calling making the request
 */
-int handle_request();
-
-/* get_ip
-    Gets IP address from a connected socketfd
-   socketfd - socket connected to proxy
-*/
-int get_ip(client_list *cli_list, int socketfd, char *IP_addr, size_t buffer_size);
+int handle_request(client_node *client, int client_socketfd, cache *cache);
 
 #endif 

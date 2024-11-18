@@ -17,13 +17,13 @@ typedef struct cache_node {
     struct cache_node *prev;
 } cache_node;
 
-typedef struct Hashmap Hashmap;
+typedef struct hashmap_cache hashmap_cache;
 
 // definition of the cache itself (double linked list + hashmap)
 typedef struct cache {
     cache_node *head; 
     cache_node *tail; 
-    Hashmap *hashmap; 
+    hashmap_cache *hashmap; 
     int count; //number of items in the cache 
     cache_node *oldest_node; // keeps track of the node with earliest expiration
     // no need for max_size variable since that information is in the hashmap

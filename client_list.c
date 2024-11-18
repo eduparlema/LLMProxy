@@ -3,7 +3,6 @@
 #include <unistd.h>
 
 #include "client_list.h"
-#include "hashmap.h"
 
 #define KB (1024)
 #define MB (KB * KB)
