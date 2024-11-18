@@ -180,7 +180,7 @@ void print_cache_nodes(cache *cache) {
 
 void put(cache *cache, char *url, int max_age, char *content, ssize_t content_size) {
     cache_node *existing_node = get_from_hashmap_cache(cache->hashmap, url);
-    // If it reacher here then node must be stale so refresh
+    // If it reaches here then node must be stale so refresh
     if (existing_node != NULL) {
         // If node already exists, just update stuff if is not a retrieval!
         printf("File %s alread in cache, updating and refreshing!\n", url);
@@ -233,6 +233,8 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
     // add the content from the response to the cache
     add_content_to_cache(new_node, content, content_size);
 
+
+    printf("INSERTED <%s> to hashmap_cache\n", url);
     // Add the new node to the hashmap 
     insert_into_hashmap_cache(cache->hashmap, url, new_node);
 

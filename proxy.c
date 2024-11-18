@@ -217,7 +217,7 @@ void modify_url(char *original_url, char *modified_url, int port) {
     char *slash_pos = strchr(path_start, '/');
 
     // Construct the port string
-    char port_str[PORT_SIZE];
+    char port_str[10];
     snprintf(port_str, sizeof(port_str), ":%d", port);
 
     if (slash_pos) {
@@ -234,12 +234,7 @@ void modify_url(char *original_url, char *modified_url, int port) {
 }
 
 int get_url(char *header_buffer, char *url, int port) {
-    char *get_line;
-
-    printf("<<<<<<<\n");
-    printf("\nThis is the header: %s\n", header_buffer);
-    printf("<<<<<<<\n");
-    
+    char *get_line;    
     get_line = strstr(header_buffer, "HEAD ");
     if (get_line) {
         get_line += strlen("HEAD ");
@@ -264,12 +259,12 @@ int get_url(char *header_buffer, char *url, int port) {
     strncpy(url, get_line, url_length);
     url[url_length] = '\0'; // Null-terminate the URL
 
-    // Modify the URL to append the port
-    char modified_url[url_length + PORT_SIZE];
-    modify_url(url, modified_url, port);
+    // // Modify the URL to append the port
+    // char modified_url[url_length + PORT_SIZE];
+    // modify_url(url, modified_url, port);
 
-    // copy back to url 
-    strncpy(url, modified_url, url_length + PORT_SIZE);
+    // // copy back to url 
+    // strncpy(url, modified_url, url_length + PORT_SIZE);
 }
 
 ssize_t add_age_to_header(char *response_buffer, ssize_t response_length, char *age_value) {
@@ -379,6 +374,7 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
     int request_portno = (strlen(port) != 0) ? atoi(port) : DEFAULT_PORT;
 
     char url[MAX_URL_LENGTH];
+    printf("<><> REQUEST BUFFER IN CLIENT: \n%s\nEND", client->request_buffer);
     get_url(client->request_buffer, url, request_portno);
 
     if (strstr(client->request_buffer, "GET ") == NULL) {
@@ -556,7 +552,7 @@ int start_proxy(int portno) {
                     fd_max = (client_socketfd > fd_max) ? client_socketfd : fd_max;
                     // add to hashmap and list
                     if (get_from_hashmap_client(clilist_hashmap, client_socketfd) == NULL) {
-                        // add if the IP address is not in the map
+                        // add if the socketfd is not in the map
                         printf("Added client with fd %d to hashmap!\n", client_socketfd);
                         client_node *node = create_client_node(client_socketfd);
                         strncpy(node->IP_addr, inet_ntoa(client_addr.sin_addr), INET_ADDRSTRLEN);
@@ -599,6 +595,7 @@ int start_proxy(int portno) {
                     }
                     if (client->header_received) {
                         printf("Complete header received!\n");
+                        printf("<>This is the header: \n%s\n", client->request_buffer);
                         if (handle_request(client, i, cache) < 0) {
                             close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                         }
