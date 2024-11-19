@@ -608,39 +608,39 @@ int start_proxy(int portno) {
                         add_client(cli_list, node);
                     }
                 } else {
-                    printf("Request arriving from client with fd: %d!\n", i);
+                    printf("[start_proxy] Request arriving from client with fd: %d!\n", i);
                     client_node *client = get_from_hashmap_client(clilist_hashmap, i);
                     if (client == NULL) {
                         // sanity check
-                        printf("ERROR: client with IP %s, not in hashmap!\n", client->IP_addr);
+                        printf("[start_proxy] ERROR: client with IP %s, not in hashmap!\n", client->IP_addr);
                         exit(EXIT_FAILURE);
                     }
-                    printf("A client with IP address %s and fd %d is sending a request!\n", client->IP_addr, i);
+                    printf("[start_proxy] A client with IP address %s and fd %d is sending a request!\n", client->IP_addr, i);
                     // Refresh its timeout time
                     client->last_activity = time(NULL);
                     // First read everything into a buffer
                     request_buffer = (char *) malloc(MAX_REQUEST_SIZE);
                     int nbytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE);
-                    if (nbytes <= 0) {
-                        if (nbytes <= 0) {
-                            printf("Connection closed by client %d!\n", client->socketfd);
-                            close_client_connection(client, &master_set, cli_list, clilist_hashmap);
 
-                        }
+                    if (nbytes <= 0) {
+                        printf("[start_proxy] Connection closed by client %d!\n", client->socketfd);
+                        close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                         continue;
                     }
+
                     // handle request buffer
                     if (handle_request_buffer(request_buffer, nbytes, client) < 0) {
                         close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                     }
+
                     if (client->header_received) {
-                        printf("Complete header received!\n");
-                        printf("<>This is the header: \n%s\n", client->request_buffer);
+                        printf("[start_proxy] Complete header received!\n");
+                        printf("[start_proxy] <>This is the header: \n%s\n", client->request_buffer);
                         if (handle_request(client, i, cache) < 0) {
                             close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                         }
                     } else {
-                        printf("Partial header received!\n");
+                        printf("[start_proxy] Partial header received!\n");
                         continue;
                     }
                 }
