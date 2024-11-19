@@ -20,7 +20,7 @@
 #define MAX_REQUEST_SIZE (8 * KB) // 8 kilobytes
 #define MAX_RESPONSE_SIZE (10 * MB) + 50 // 10 MB + 50 bytes for the Age:
 #define MAX_HOSTNAME_SIZE 256
-#define PORT_SIZE 6 
+#define PORT_SIZE 6
 #define DEFAULT_PORT 80
 #define DEFAULT_MAX_AGE 3600
 #define DEFAULT_CACHE_SIZE 10
@@ -40,7 +40,7 @@ void handle_sigint(int sig) {
 }
 
 int find_max_fd(fd_set *set, int max_possible_fd) {
-    int max_fd = -1; 
+    int max_fd = -1;
     for (int fd = 0; fd < max_possible_fd; fd ++) {
         if (FD_ISSET(fd, set)) {
             max_fd = fd;
@@ -60,7 +60,7 @@ int create_server_socket(int portno) {
     proxy_addr.sin_addr.s_addr = INADDR_ANY; //IP address of local machine
     proxy_addr.sin_port = htons(portno);
 
-    // bind 
+    // bind
     if (bind(socketfd, (struct sockaddr *) &proxy_addr, sizeof(proxy_addr)) < 0) {
         perror("binding");
         close(socketfd);
@@ -83,12 +83,12 @@ int create_client_socket(struct sockaddr_in server_addr, int portno, char *hostn
     }
     memset((char *) &server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    bcopy((char *)server->h_addr, 
+    bcopy((char *)server->h_addr,
             (char *)&server_addr.sin_addr.s_addr,
             server->h_length);
     server_addr.sin_port = htons(portno);
 
-    // connect with the server 
+    // connect with the server
     if ((connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr))) < 0) {
         perror("ERROR connecting with the server");
         return -1;
@@ -233,8 +233,49 @@ void modify_url(char *original_url, char *modified_url, int port) {
     }
 }
 
+/**
+ * Extracts the full URL from an HTTP GET request.
+ *
+ * @param httpRequest The HTTP request string to parse for the URL.
+ * @return A dynamically allocated string containing the URL from the GET request,
+ *         or NULL on error.
+ *
+ * This function searches for the "GET" method in the HTTP request and extracts
+ * the URL that follows.
+ * If the "GET " or " HTTP" markers are not found, the function logs an error
+ * and returns NULL.
+ */
+char* getURLFromRequest(const char httpRequest[]) {
+    // Create a local copy of the httpRequest
+    char requestCopy[MAX_REQUEST_SIZE];
+    strncpy(requestCopy, httpRequest, MAX_REQUEST_SIZE - 1);
+    requestCopy[MAX_REQUEST_SIZE - 1] = '\0';
+
+    // Find the first occurrence of "GET "
+    char *GetLine = strstr(requestCopy, "GET ");
+    if (GetLine == NULL) {
+        fprintf(stderr, "getURLFromRequest - ERROR: GET line not found in the request.\n");
+        return NULL;
+    }
+
+    // Move past "GET " to the actual URL
+    GetLine += strlen("GET ");
+
+    // Find the end of the URL (' HTTP')
+    char *endOfGetLine = strstr(GetLine, " HTTP");
+    if (endOfGetLine != NULL) {
+        *endOfGetLine = '\0';
+    } else {
+        fprintf(stderr, "getURLFromRequest - ERROR: End of GET line not found.\n");
+        return NULL;
+    }
+
+    // Return a copy of the URL
+    return strdup(GetLine);
+}
+
 int get_url(char *header_buffer, char *url, int port) {
-    char *get_line;    
+    char *get_line;
     get_line = strstr(header_buffer, "HEAD ");
     if (get_line) {
         get_line += strlen("HEAD ");
@@ -263,7 +304,7 @@ int get_url(char *header_buffer, char *url, int port) {
     // char modified_url[url_length + PORT_SIZE];
     // modify_url(url, modified_url, port);
 
-    // // copy back to url 
+    // // copy back to url
     // strncpy(url, modified_url, url_length + PORT_SIZE);
 }
 
@@ -297,11 +338,11 @@ ssize_t add_age_to_header(char *response_buffer, ssize_t response_length, char *
 ssize_t read_from_server(int socketfd, char *buffer, ssize_t buffer_size) {
     ssize_t bytes_read = 0;
     ssize_t total_bytes = 0;
-    ssize_t content_length = -1; 
-    char *end_header; 
+    ssize_t content_length = -1;
+    char *end_header;
 
     // Read the data from the socket in chunks
-    int header_received = 0; 
+    int header_received = 0;
     while ((bytes_read = read(socketfd, buffer + total_bytes, buffer_size - total_bytes - 1)) > 0) {
         total_bytes += bytes_read;
 
@@ -313,7 +354,7 @@ ssize_t read_from_server(int socketfd, char *buffer, ssize_t buffer_size) {
             buffer[total_bytes] = '\0'; // Null terminate the header
             end_header = strstr(buffer, "\r\n\r\n");
             if (end_header) {
-                header_received = 1;             
+                header_received = 1;
                 // Extract Content-Length
                 char *content_length_str = strstr(buffer, "Content-Length: ");
                 if (content_length_str) {
@@ -341,7 +382,7 @@ ssize_t read_from_server(int socketfd, char *buffer, ssize_t buffer_size) {
 }
 
 int get_max_age(char *header_buffer) {
-    // Extract the Cache-Control: line 
+    // Extract the Cache-Control: line
     char *cache_line = strstr(header_buffer, "Cache-Control:");
     if (cache_line == NULL) {
         printf("Cache control not present in response\n");
@@ -356,7 +397,7 @@ int get_max_age(char *header_buffer) {
     max_age_str += strlen("max-age=");
 
     int max_age = atoi(max_age_str);
-    
+
     return max_age;
 }
 
@@ -403,7 +444,7 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
         // get age
         long age = current_time.tv_sec - time_insrted;
         // make it into a string
-        char age_value[20]; 
+        char age_value[20];
         snprintf(age_value, sizeof(age_value), "%ld", age);
         char *copy_response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate memory for the copy
         if (copy_response_buffer == NULL) {
@@ -450,7 +491,7 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
 
         // Read response from the server
         response_size = read_from_server(server_socketfd, response_buffer, MAX_RESPONSE_SIZE);
-        
+
         // Either put or update the cache (put function takes care of both)
         int max_age = get_max_age(response_buffer);
         printf("This is the max age: %d\n", max_age);
@@ -514,7 +555,7 @@ int start_proxy(int portno) {
         timeout.tv_usec = 0;
         printf("WILL TIMEOUT IN %d seconds\n", min_time_until_expiration);
 
-        temp_set = master_set; 
+        temp_set = master_set;
 
         int activity = select(fd_max + 1, &temp_set, NULL, NULL, &timeout);
         if (activity < 0) {
@@ -526,7 +567,7 @@ int start_proxy(int portno) {
             }
             break;
         } else if (activity == 0) {
-            // Check if any timed-out 
+            // Check if any timed-out
             printf("Timed out, checking if we need to remove some clients\n");
             check_timeout(&master_set, clilist_hashmap, cli_list);
         }
@@ -545,7 +586,7 @@ int start_proxy(int portno) {
                         exit(EXIT_FAILURE);
                     }
 
-                    printf("Accepted the request from the client with IP %s and fd %hd.\n", 
+                    printf("Accepted the request from the client with IP %s and fd %hd.\n",
                                 inet_ntoa(client_addr.sin_addr), client_socketfd);
                     FD_SET(client_socketfd, &master_set); // Add to set
                     // update fd_max
@@ -577,7 +618,7 @@ int start_proxy(int portno) {
                         if (nbytes < 0) {
                             perror("ERROR reading");
                             close(client->socketfd);
-                        } 
+                        }
                         if (nbytes == 0) {
                             printf("Connection closed by client %d!\n", client->socketfd);
                         }

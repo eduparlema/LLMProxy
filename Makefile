@@ -1,7 +1,7 @@
 src = $(wildcard *.c)
 obj = $(src:.c=.o)
 CC = gcc
-LDFLAGS = -lnsl
+LDFLAGS =
 
 a.out: $(obj)
 	$(CC) -o $@ $^ $(LDFLAGS)
