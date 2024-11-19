@@ -100,6 +100,9 @@ int create_client_socket(struct sockaddr_in server_addr, int portno, char *hostn
 
 int handle_request_buffer(char *request_buffer, int buffer_size, client_node *client) {
     size_t remaining_space = MAX_REQUEST_SIZE - client->bytes_received - 1;
+    // Refresh its timeout time
+    client->last_activity = time(NULL);
+
     if (buffer_size > remaining_space) {
         perror("Request buffer overflow client!\n");
         return -1;
@@ -616,8 +619,6 @@ int start_proxy(int portno) {
                         exit(EXIT_FAILURE);
                     }
                     printf("[start_proxy] A client with IP address %s and fd %d is sending a request!\n", client->IP_addr, i);
-                    // Refresh its timeout time
-                    client->last_activity = time(NULL);
                     // First read everything into a buffer
                     request_buffer = (char *) malloc(MAX_REQUEST_SIZE);
                     int nbytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE);
@@ -638,6 +639,7 @@ int start_proxy(int portno) {
                         printf("[start_proxy] <>This is the header: \n%s\n", client->request_buffer);
                         if (handle_request(client, i, cache) < 0) {
                             close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+                            continue;
                         }
                     } else {
                         printf("[start_proxy] Partial header received!\n");
