@@ -41,7 +41,7 @@ void handle_sigint(int sig) {
 
 int find_max_fd(fd_set *set, int max_possible_fd) {
     int max_fd = -1;
-    for (int fd = 0; fd < max_possible_fd; fd ++) {
+    for (int fd = 0; fd <= max_possible_fd; fd ++) {
         if (FD_ISSET(fd, set)) {
             max_fd = fd;
         }
@@ -622,19 +622,11 @@ int start_proxy(int portno) {
                     request_buffer = (char *) malloc(MAX_REQUEST_SIZE);
                     int nbytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE);
                     if (nbytes <= 0) {
-                        if (nbytes < 0) {
-                            perror("ERROR reading");
-                            close(client->socketfd);
-                        }
-                        if (nbytes == 0) {
+                        if (nbytes <= 0) {
                             printf("Connection closed by client %d!\n", client->socketfd);
+                            close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+
                         }
-                        if (FD_ISSET(client->socketfd, &master_set)) {
-                            FD_CLR(client->socketfd, &master_set);
-                        }
-                        remove_client(cli_list, client);
-                        remove_from_hashmap_client(clilist_hashmap, client->socketfd);
-                        free_client_node(client);
                         continue;
                     }
                     // handle request buffer
@@ -653,7 +645,9 @@ int start_proxy(int portno) {
                     }
                 }
             }
-        }
+        };
+
+        fd_max = find_max_fd(&master_set, fd_max);
         printf("\nThe size of the cache is: %d\n", cache->count);
         print_cache_nodes(cache);
     }
