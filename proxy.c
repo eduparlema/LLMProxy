@@ -414,9 +414,16 @@ int handle_request(client_node *client, int client_socketfd, cache *cache) {
     // if no port specified set it to 80
     int request_portno = (strlen(port) != 0) ? atoi(port) : DEFAULT_PORT;
 
-    char url[MAX_URL_LENGTH];
+
     printf("<><> REQUEST BUFFER IN CLIENT: \n%s\nEND", client->request_buffer);
-    get_url(client->request_buffer, url, request_portno);
+
+    char *url = getURLFromRequest(client->request_buffer);
+    if (url == NULL) {
+        fprintf(stderr, "handle_request : ERROR - Could not extract URL from request.\n");
+        return -1;
+    }
+
+    printf("My url is %s\n", url);
 
     if (strstr(client->request_buffer, "GET ") == NULL) {
         is_get_request = 0; // not a get request so do not cache
