@@ -10,9 +10,9 @@
 #include "hashmap_cache.h"
 #include "cache.h"
 
-// Helper functions for the double linked list 
+// Helper functions for the double linked list
 void add_node(cache *cache, cache_node *node) {
-    cache_node *prev_node = cache->tail->prev; 
+    cache_node *prev_node = cache->tail->prev;
     cache->tail->prev = node;
     node->next = cache->tail;
     node->prev = prev_node;
@@ -35,16 +35,16 @@ bool is_stale(cache *cache, char *url) {
     cache_node *node = get_from_hashmap_cache(cache->hashmap, url);
 
     struct timespec current_time;
-    // Get the current time 
+    // Get the current time
     clock_gettime(CLOCK_REALTIME, &current_time);
 
     // Compare current time with node's expiration time
     if (current_time.tv_sec > node->expiration_time.tv_sec ||
         (current_time.tv_sec == node->expiration_time.tv_sec &&
          current_time.tv_nsec > node->expiration_time.tv_nsec)) {
-        return true; 
+        return true;
     }
-    
+
     return false;
 }
 
@@ -61,9 +61,9 @@ void update_oldest_node(cache *cache) {
     cache->oldest_node = NULL;
     cache_node *current = cache->head->next; // Start from the first real node
     while (current != cache->tail) {
-        if (cache->oldest_node == NULL || 
+        if (cache->oldest_node == NULL ||
             current->expiration_time.tv_sec < cache->oldest_node->expiration_time.tv_sec ||
-            (current->expiration_time.tv_sec == cache->oldest_node->expiration_time.tv_sec && 
+            (current->expiration_time.tv_sec == cache->oldest_node->expiration_time.tv_sec &&
             current->expiration_time.tv_nsec < cache->oldest_node->expiration_time.tv_nsec)) {
             cache->oldest_node = current;
         }
@@ -77,12 +77,12 @@ void add_content_to_cache(cache_node *node, char *content, ssize_t content_size)
         free(node->response_content);
         node->response_content = NULL;
     }
-    
+
     node->response_content = (char *)malloc(content_size);
     if (node->response_content == NULL) {
         perror("Failed to allocate memory for response content.");
         return;
-    } 
+    }
 
     // copy the content to the node
     memcpy(node->response_content, content, content_size);
@@ -90,28 +90,48 @@ void add_content_to_cache(cache_node *node, char *content, ssize_t content_size)
 }
 
 
-// cache functions implementation 
 cache* create_cache(int size) {
+    // Allocate memory for the cache structure
     cache *new_cache = (cache*)malloc(sizeof(cache));
+    if (!new_cache) {
+        return NULL;
+    }
 
-    // initialize the hashmap 
+    // Initialize the hashmap
     new_cache->hashmap = create_hashmap_cache(size);
+    if (!new_cache->hashmap) {
+        free(new_cache);
+        return NULL;
+    }
 
-    // allocate and initialize sentinel nodes 
+    // Allocate and initialize sentinel nodes
     new_cache->head = (cache_node*)malloc(sizeof(cache_node));
-    new_cache->tail = (cache_node*)malloc(sizeof(cache_node));
+    if (!new_cache->head) {
+        free(new_cache->hashmap);
+        free(new_cache);
+        return NULL;
+    }
 
+    new_cache->tail = (cache_node*)malloc(sizeof(cache_node));
+    if (!new_cache->tail) {
+        free(new_cache->head);
+        free(new_cache->hashmap);
+        free(new_cache);
+        return NULL;
+    }
+
+    // Initialize the sentinel nodes to point to each other
     new_cache->head->next = new_cache->tail;
     new_cache->head->prev = NULL;
     new_cache->tail->prev = new_cache->head;
     new_cache->tail->next = NULL;
 
-    new_cache->count = 0; 
-
+    new_cache->count = 0;
     new_cache->oldest_node = NULL;
 
     return new_cache;
 }
+
 
 void print_node_stats(cache *cache) {
     cache_node *current = cache->head->next; // Start after the head sentinel
@@ -120,17 +140,17 @@ void print_node_stats(cache *cache) {
         printf("Cache is empty.\n");
         return;
     }
-    int nodeno = 0; 
+    int nodeno = 0;
     printf("Cache contents (from most recent to least recent):\n");
     while (current != cache->tail) { // Traverse until the tail sentinel
-        printf("url: %s, Max Age: %d, Expiration Time: %ld.%09ld\n", 
-            current->url, 
-            current->max_age, 
-            (long)current->expiration_time.tv_sec, 
+        printf("url: %s, Max Age: %d, Expiration Time: %ld.%09ld\n",
+            current->url,
+            current->max_age,
+            (long)current->expiration_time.tv_sec,
             current->expiration_time.tv_nsec);
 
         // printf("Content is: \n %s \n", current->response_content);
-        
+
         current = current->next; // Move to the next node
     }
 }
@@ -143,12 +163,12 @@ void print_cache_nodes(cache *cache) {
     }
 
     // Initial buffer size and increment size
-    size_t buffer_size = 256; 
+    size_t buffer_size = 256;
     char *result = malloc(buffer_size); // Dynamic buffer
     if (result == NULL) {
         printf("Memory allocation failed.\n");
     }
-    
+
     result[0] = '\0'; // Initialize with empty string
 
     while (current != cache->tail) { // Traverse until the tail sentinel
@@ -197,32 +217,32 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
     }
 
     // Check if we have enough space in hashmap before inserting
-    if (cache->count >= cache->hashmap->size) { 
+    if (cache->count >= cache->hashmap->size) {
         printf("Not enough space in cache, about to evict!\n");
         // First check if the oldest node is defined and is stale
         cache_node *evicted_node = NULL;
 
         if (cache->oldest_node && is_stale(cache, cache->oldest_node->url)) {
-            // Evict the stale oldest_node 
+            // Evict the stale oldest_node
             evicted_node = cache->oldest_node;
             remove_from_hashmap_cache(cache->hashmap, evicted_node->url);  // Remove from hashmap
             remove_node(cache, evicted_node);  // Remove from linked list
-        
+
             printf("Evicted oldest stale url %s\n!", evicted_node->url);
-            
+
         } else {
             // Evict LRU node since no stale nodes present
-            evicted_node = cache->head->next; 
+            evicted_node = cache->head->next;
             remove_from_hashmap_cache(cache->hashmap, evicted_node->url);
             remove_node(cache, evicted_node);
             printf("Evicted LRU url %s\n!", evicted_node->url);
         }
-        // update oldest_stale_node 
+        // update oldest_stale_node
         update_oldest_node(cache);
         free(evicted_node);
     }
 
-    // create a new cache_node 
+    // create a new cache_node
     cache_node *new_node = (cache_node*)malloc(sizeof(cache_node));
     new_node->response_content = NULL;
     strncpy(new_node->url, url, MAX_URL_LENGTH);
@@ -235,14 +255,14 @@ void put(cache *cache, char *url, int max_age, char *content, ssize_t content_si
 
 
     printf("INSERTED <%s> to hashmap_cache\n", url);
-    // Add the new node to the hashmap 
+    // Add the new node to the hashmap
     insert_into_hashmap_cache(cache->hashmap, url, new_node);
 
-    // Add node to double linked list 
+    // Add node to double linked list
     add_node(cache, new_node);
 
     // update oldest_node if necessary
-    if (cache->oldest_node == NULL || 
+    if (cache->oldest_node == NULL ||
         new_node->expiration_time.tv_sec < cache->oldest_node->expiration_time.tv_sec ||
         (new_node->expiration_time.tv_sec == cache->oldest_node->expiration_time.tv_sec &&
          new_node->expiration_time.tv_nsec < cache->oldest_node->expiration_time.tv_nsec)) {
@@ -256,7 +276,7 @@ ssize_t get(cache* cache, char *url, char *content_buffer) {
     printf("Getting url %s\n", url);
     cache_node *node = get_from_hashmap_cache(cache->hashmap, url);
 
-    // remove and add node so it is to the left of the tail 
+    // remove and add node so it is to the left of the tail
     remove_node(cache, node);
 
     // add it back so it is not LRU
@@ -271,7 +291,7 @@ ssize_t get(cache* cache, char *url, char *content_buffer) {
 }
 
 
-void free_cache(cache* cache) { 
+void free_cache(cache* cache) {
     // Free all the cache nodes between head and tail
     cache_node *current = cache->head->next;
     while (current != cache->tail) {
@@ -292,6 +312,6 @@ void free_cache(cache* cache) {
 
 
 // Handle the Cache-Control header line (Get the max-age)
-// If Cache-Control is not present max age is 3600 s 
+// If Cache-Control is not present max age is 3600 s
 // Modify response to the client adding Age
-// Create cache with size 10 
+// Create cache with size 10
