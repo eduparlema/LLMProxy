@@ -6,7 +6,7 @@
 
 #define KB (1024)
 #define MB (KB * KB)
-#define MAX_REQUEST_SIZE (8 * KB) // 8 kilobytes
+#define MAX_REQUEST_SIZE (16 * KB) // 8 kilobytes
 
 client_list *create_client_list() {
     client_list *cli_list = (client_list *) malloc(sizeof(client_list));

@@ -12,7 +12,7 @@
 #include "cache.h"
 
 #define DEFAULT_TIMEOUT 600
-#define MAX_URL_LENGTH 100
+#define MAX_URL_LENGTH 2000
 
 // Note: Since TCP ensures that we receive the data in order, a client can
 // have at most one incomplete message at a time.

@@ -21,7 +21,7 @@
 #define KB (1024)
 #define MB (KB * KB)
 #define MAX_REQUEST_SIZE (8 * KB) // 8 kilobytes
-#define MAX_RESPONSE_SIZE (10 * MB) + 50 // 10 MB + 50 bytes for the Age:
+#define MAX_RESPONSE_SIZE (20 * MB) + 50 // 10 MB + 50 bytes for the Age:
 #define MAX_HOSTNAME_SIZE 256
 #define PORT_SIZE 6
 #define DEFAULT_PORT 443
@@ -232,6 +232,15 @@ int create_server_socket(int portno) {
     if (socketfd < 0) {
         perror("socket");
     }
+
+    // setsockopt: Handy debugging trick to avoid "Address alrd in use error"
+    int optval = 1;
+    if (setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(int)) < 0) {
+        perror("ERROR in setsockopt with flag SO_REUSEADDR");
+        close(socketfd);
+        exit(EXIT_FAILURE);
+    }
+
     struct sockaddr_in proxy_addr;
     memset((char *) &proxy_addr, 0, sizeof(proxy_addr));
     proxy_addr.sin_family = AF_INET;
@@ -299,6 +308,13 @@ SSLConnection create_client_socket(struct sockaddr_in server_addr, int portno, c
     SSL_set_fd(ssl, sockfd);
     SSL_set_info_callback(ssl, SSL_info_callback);
 
+    if (SSL_set_tlsext_host_name(ssl, hostname) != 1) {
+        fprintf(stderr, "[create_client_socket] ERROR: Failed to set SNI.\n");
+        close(sockfd);
+        SSL_free(ssl);
+        return connection;
+    }
+
     if (SSL_connect(ssl) <= 0) {
         fprintf(stderr, "[create_client_socket] SSL connection failed.\n");
         ERR_print_errors_fp(stderr);
@@ -313,8 +329,12 @@ SSLConnection create_client_socket(struct sockaddr_in server_addr, int portno, c
     X509 *cert = SSL_get_peer_certificate(ssl);
     if (cert) {
         char *line = X509_NAME_oneline(X509_get_subject_name(cert), 0, 0);
-        printf("[create_client_socket] Server certificate subject: %s\n", line);
-        OPENSSL_free(line);
+        if (line) {
+            printf("[create_client_socket] Server certificate subject: %s\n", line);
+            OPENSSL_free(line);
+        } else {
+            printf("[create_client_socket] Failed to retrieve subject name.\n");
+        }
         X509_free(cert);
     } else {
         printf("[create_client_socket] No server certificate presented.\n");
@@ -492,43 +512,6 @@ int get_hostname_and_port(const char *request, char *hostname, size_t hostname_s
     return 0; // Success
 }
 
-void modify_url(char *original_url, char *modified_url, int port) {
-    // Find and remove " HTTP/1.1" first
-    char *http_version = strstr(original_url, " HTTP/");
-    if (http_version) {
-        *http_version = '\0';  // Terminate the string before " HTTP/1.1"
-    }
-
-    // Find the start of the hostname by locating "://"
-    char *path_start = strstr(original_url, "://");
-    if (path_start == NULL) {
-        perror("Invalid URL format.");
-        return;
-    }
-
-    // Move past the '://'
-    path_start += 3;
-
-    // Find the first '/' after the hostname (start of the path)
-    char *slash_pos = strchr(path_start, '/');
-
-    // Construct the port string
-    char port_str[10];
-    snprintf(port_str, sizeof(port_str), ":%d", port);
-
-    if (slash_pos) {
-        // Copy up to the slash position (hostname) and append the port
-        size_t host_length = slash_pos - original_url;
-        strncpy(modified_url, original_url, host_length);  // Copy until the slash
-        strcat(modified_url, port_str);              // Append the port
-        strcat(modified_url, slash_pos);             // Append the path (slash included)
-    } else {
-        // No path, just append the port to the hostname
-        strcpy(modified_url, original_url);   // Copy the entire URL
-        strcat(modified_url, port_str); // Append the port
-    }
-}
-
 /**
  * Extracts the full URL from an HTTP GET request.
  *
@@ -605,9 +588,7 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
     int header_received = 0; // Flag to track if HTTP headers have been fully received
     int is_chunked = 0;      // Flag to indicate chunked transfer encoding
 
-    while (1) {
-        bytes_read = SSL_read(ssl, buffer + total_bytes, buffer_size - total_bytes - 1);
-
+    while ((bytes_read = SSL_read(ssl, buffer + total_bytes, buffer_size - total_bytes - 1)) > 0) {
         if (bytes_read > 0) {
             total_bytes += bytes_read;
             buffer[total_bytes] = '\0'; // Null terminate the buffer for header parsing
@@ -641,6 +622,9 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
 
                     // Check for `Transfer-Encoding: chunked`
                     char *transfer_encoding = strstr(buffer, "Transfer-Encoding: chunked");
+                    if (!transfer_encoding) {
+                        transfer_encoding = strstr(buffer, "transfer-encoding: chunked");
+                    }
                     if (transfer_encoding) {
                         is_chunked = 1;
                         printf("[read_from_server] Transfer-Encoding: chunked detected.\n");
@@ -675,6 +659,9 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
                 } else if (content_length != -1 &&
                            total_bytes >= (content_length + (end_header - buffer + 4))) {
                     printf("[read_from_server] Full response received.\n");
+                    break;
+                } else {
+                    // TODO: Make more robust in the future
                     break;
                 }
             }
@@ -771,6 +758,10 @@ int handle_request(client_node *client, int client_socketfd, cache *cache, SSL_C
 
         /* edit response header */ //TODO: IMPROVE THIS!
         cache_node *node = get_node(cache, url);
+
+        if (!node) {
+            printf("ERROR, node is empty!\n");
+        }
         // get current time
         struct timespec current_time;
         clock_gettime(CLOCK_REALTIME, &current_time);

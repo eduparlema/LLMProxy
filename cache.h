@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <time.h>
 
-#define MAX_URL_LENGTH 100
+#define MAX_URL_LENGTH 2000
 
 // Definition of the cache_node used as the double linked list 
 typedef struct cache_node {
