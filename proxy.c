@@ -660,7 +660,7 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
                            total_bytes >= (content_length + (end_header - buffer + 4))) {
                     printf("[read_from_server] Full response received.\n");
                     break;
-                } else {
+                } else if (content_length == -1 && !is_chunked) {
                     // TODO: Make more robust in the future
                     break;
                 }
