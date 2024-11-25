@@ -20,7 +20,6 @@
 
 #define KB (1024)
 #define MB (KB * KB)
-#define MAX_REQUEST_SIZE (8 * KB) // 8 kilobytes
 #define MAX_RESPONSE_SIZE (20 * MB) + 50 // 10 MB + 50 bytes for the Age:
 #define MAX_HOSTNAME_SIZE 256
 #define PORT_SIZE 6
@@ -606,9 +605,9 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
                     printf("\n-----------------------\n");
 
                     // Extract `Content-Length` header (case-insensitive)
-                    char *content_length_str = strstr(buffer, "content-length: ");
+                    char *content_length_str = strstr(buffer, "\ncontent-length: ");
                     if (!content_length_str) {
-                        content_length_str = strstr(buffer, "Content-Length: ");
+                        content_length_str = strstr(buffer, "\nContent-Length: ");
                     }
 
                     if (content_length_str) {
