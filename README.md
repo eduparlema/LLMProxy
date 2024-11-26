@@ -21,11 +21,11 @@ HTTPS Proxy Powered by LLMs
 **CURL Commands I'm using to test**
 ```bash
 # ONLY HTML
-curl --proxy <MY_IP_ADDRESS>:<MY_PORT> --cacert ca.crt https://en.wikipedia.org/wiki/Monty_Python%27s_The_Meaning_of_Life -v
+curl --proxy 10.243.75.21:9100 --cacert ca.crt https://en.wikipedia.org/wiki/Monty_Python%27s_The_Meaning_of_Life -v
 
 # JPG 10MB
-curl --proxy <MY_IP_ADDRESS>:<MY_PORT> --cacert ca.crt --output Pizigani_1367_Chart_10MB.jpg --progress-bar https://upload.wikimedia.org/wikipedia/commons/f/ff/Pizigani_1367_Chart_10MB.jpg -v
+curl --proxy 10.243.75.21:9100 --cacert ca.crt --output Pizigani_1367_Chart_10MB.jpg --progress-bar https://upload.wikimedia.org/wikipedia/commons/f/ff/Pizigani_1367_Chart_10MB.jpg -v
 
 # Headshot JPG
-curl --proxy <MY_IP_ADDRESS>:<MY_PORT>--cacert ca.crt --output dga-headshot.jpg --progress-bar https://www.cs.cmu.edu/\~dga/dga-headshot.jpg -v
+curl --proxy 10.243.75.21:9100 --cacert ca.crt --output dga-headshot.jpg --progress-bar https://www.cs.cmu.edu/\~dga/dga-headshot.jpg -v
 ```

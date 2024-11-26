@@ -43,7 +43,7 @@ typedef struct client_list {
     client_node *tail;
 } client_list;
 
-typedef struct hashmap_client hashmap_client;
+typedef struct hashmap_proxy hashmap_proxy;
 
 // Create and initialize a client list
 client_list *create_client_list();
@@ -61,6 +61,6 @@ void remove_client(client_list *client_list, client_node *client);
 time_t get_min_time(client_list *client_list);
 
 // Check and handle clients that have timed out
-void check_timeout(fd_set *master_set, hashmap_client *hashmap, client_list *client_list);
+void check_timeout(fd_set *master_set, hashmap_proxy *hashmap, client_list *client_list);
 
 #endif

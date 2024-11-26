@@ -8,9 +8,19 @@
 
 // Represents an SSL connection
 typedef struct {
-    int sockfd;  // Socket file descriptor
-    SSL *ssl;    // SSL context for secure communication
+   int sockfd;  // Socket file descriptor
+   SSL *ssl;    // SSL context for secure communication
 } SSLConnection;
+
+typedef struct {
+   int sockfd; // Socket file descriptor
+   SSL *client_ssl; // Its corresponding client's socket
+   SSL *ssl;  // SSL context for secure communication
+   int is_get_request; // Only add to cache if is get request
+   char url[MAX_URL_LENGTH]; // Url to add to cache
+} server_node;
+
+server_node *create_server_node(int sockfd, SSL *client_ssl, SSL *ssl, int is_get_request, char *url);
 
 /* start_proxy
    Starts the proxy so that it is actively listening at portno.
@@ -53,12 +63,15 @@ int handle_request_buffer(char *request_buffer, int buffer_len, client_node *cli
    Processes the client's request. Either retrieves the requested data
    from the cache or fetches it from the server.
    client - client node making the request.
+   server_hashmap - hashmap containing info about servers (used for read)
    client_socketfd - socket file descriptor for the client connection.
    cache - cache structure for storing/retrieving responses.
    ssl_ctx - SSL context used for establishing secure connections.
-   Returns 0 on success, -1 on failure.
+   Returns -1 on failure, otherwise the MAXIMUM FILEDESCRIPTOR in master_set
+   (we need this since we are adding the server's socketfd)
 */
-int handle_request(client_node *client, int client_socketfd, cache *cache, SSL_CTX *ssl_ctx);
+int handle_request(client_node *client, hashmap_proxy *server_hashmap, int client_socketfd, 
+                    cache *cache, SSL_CTX *client_ctx, fd_set *master_set, int fd_max);
 
 /* read_from_server
    Reads data from the server over an SSL connection into a buffer.
