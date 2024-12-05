@@ -70,8 +70,8 @@ int handle_request_buffer(char *request_buffer, int buffer_len, client_node *cli
    Returns -1 on failure, otherwise the MAXIMUM FILEDESCRIPTOR in master_set
    (we need this since we are adding the server's socketfd)
 */
-int handle_request(client_node *client, hashmap_proxy *server_hashmap, int client_socketfd, 
-                    cache *cache, SSL_CTX *client_ctx, fd_set *master_set, int fd_max);
+// int handle_request(client_node *client, hashmap_proxy *server_hashmap, int client_socketfd, 
+//                     cache *cache, SSL_CTX *client_ctx, fd_set *master_set, int fd_max);
 
 /* read_from_server
    Reads data from the server over an SSL connection into a buffer.
