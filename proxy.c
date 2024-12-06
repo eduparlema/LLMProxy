@@ -20,7 +20,7 @@
 
 #define KB (1024)
 #define MB (KB * KB)
-#define MAX_RESPONSE_SIZE (20 * MB) + 50 // 10 MB + 50 bytes for the Age:
+#define MAX_RESPONSE_SIZE 1 * MB // 10 MB + 50 bytes for the Age:
 #define MAX_HOSTNAME_SIZE 256
 #define PORT_SIZE 6
 #define DEFAULT_PORT 443
@@ -29,7 +29,6 @@
 #define MAX_CLIENTS 541 // Max number of clients
 
 int master_socketfd; // master socket
-int server_socketfd; // socket established to communicate with server
 
 // Global variable to control the infinite loop
 volatile sig_atomic_t ctrl_c_ended = 0;
@@ -275,6 +274,34 @@ void SSL_info_callback(const SSL *ssl, int where, int ret) {
     printf("[SSL INFO] State: %s, Event: %s, Ret: %d\n", state, where_str, ret);
 }
 
+int create_simple_client_socket(struct sockaddr_in server_addr, int portno, char *hostname) {
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    struct hostent *server;
+    if (sockfd < 1) {
+        perror("ERROR opening socket!");
+        return -1;
+    }
+    server = gethostbyname(hostname);
+    if (server == NULL) {
+        return -1;
+    }
+    memset((char *) &server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr, 
+            (char *)&server_addr.sin_addr.s_addr,
+            server->h_length);
+    server_addr.sin_port = htons(portno);
+
+    // connect with the server 
+    if ((connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr))) < 0) {
+        perror("ERROR connecting with the server");
+        return -1;
+    }
+    printf("Connected to host with IP: %s\n", inet_ntoa(server_addr.sin_addr));
+
+    return sockfd;
+}
+
 SSLConnection create_client_socket(struct sockaddr_in server_addr, int portno, char *hostname, SSL_CTX *client_ctx) {
     printf("[create_client_socket] Connecting to hostname: %s, port: %d\n", hostname, portno);
 
@@ -412,9 +439,7 @@ void close_client_connection(client_node *client, fd_set *master_set, client_lis
         if (close(client->socketfd) < 0) {
             perror("[close_client_connection] Error closing socket");
         }
-        if (FD_ISSET(client->socketfd, master_set)) {
-            FD_CLR(client->socketfd, master_set); // Remove from the master set
-        }
+        FD_CLR(client->socketfd, master_set); // Remove from the master set
         printf("[close_client_connection] Closed socket FD %d.\n", socketToClean);
     }
 
@@ -536,7 +561,7 @@ char* get_url_from_request(const char httpRequest[]) {
     // Find the first occurrence of "GET "
     char *GetLine = strstr(requestCopy, "GET ");
     if (GetLine == NULL) {
-        fprintf(stderr, "getURLFromRequest - ERROR: GET line not found in the request.\n");
+        printf("Not a GET request!\n");
         return NULL;
     }
 
@@ -583,7 +608,8 @@ ssize_t add_age_to_header(char *response_buffer, ssize_t response_length, char *
     return strlen(age_header);
 }
 
-ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
+ssize_t read_from_server(server_node *server, char *buffer, ssize_t buffer_size,
+                            hashmap_proxy *server_hashmap, fd_set *master_set) {
     ssize_t bytes_read = 0;
     ssize_t total_bytes = 0;
     ssize_t content_length = -1;
@@ -591,7 +617,10 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
     int header_received = 0; // Flag to track if HTTP headers have been fully received
     int is_chunked = 0;      // Flag to indicate chunked transfer encoding
 
-    while ((bytes_read = SSL_read(ssl, buffer + total_bytes, buffer_size - total_bytes - 1)) > 0) {
+    while ((bytes_read = SSL_read(server->ssl, buffer + total_bytes, buffer_size - total_bytes - 1)) > 0) {
+        printf("buf_s - total_b: %ld\n", buffer_size - total_bytes - 1);
+        printf("OUTER LOOP!\n");
+        printf("BYTES READ: %zd\n", bytes_read);
         if (bytes_read > 0) {
             total_bytes += bytes_read;
             buffer[total_bytes] = '\0'; // Null terminate the buffer for header parsing
@@ -634,32 +663,39 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
                     }
                 }
             }
-
             if (header_received) {
-                if (is_chunked) {
-                    printf("[read_from_server] Header received and is chunked\n");
+                int endedChunks = 0;
+                if (is_chunked && !endedChunks) {
                     // Handle chunked transfer encoding
                     ssize_t body_offset = end_header - buffer + 4;
                     char *chunk_start = buffer + body_offset;
                     while (1) {
+                        printf("INNER LOOP!\n");
                         char *chunk_size_str = strstr(chunk_start, "\r\n");
                         if (!chunk_size_str) break;
 
                         // Parse the chunk size
+                        printf("PARSING CHUNK SIZE!\n");
                         ssize_t chunk_size = strtol(chunk_start, NULL, 16);
                         if (chunk_size == 0) {
                             printf("[read_from_server] Final chunk received.\n");
                             break; // Last chunk
                         }
+                        printf("CHUNK SIZE READ: %zd\n", chunk_size);
 
                         chunk_start = chunk_size_str + 2 + chunk_size + 2; // Move past chunk data and CRLF
                         total_bytes += chunk_size;
 
+                        printf("ABOUT TO BREAK FROM BUFFER!\n");
                         if (chunk_start >= buffer + total_bytes) {
+                            endedChunks = 1;
                             break; // Exit if buffer is exhausted
                         }
+                        printf("BREAKING!\n");
                     }
-                    break;
+                    if (strstr(chunk_start, "\r\n\r\n") == NULL) {
+                        break;
+                    }
                 } else if (content_length != -1 &&
                            total_bytes >= (content_length + (end_header - buffer + 4))) {
                     printf("[read_from_server] Full response received.\n");
@@ -671,14 +707,14 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
             }
         } else if (bytes_read == 0) {
             // Connection closed by the server
-            printf("[read_from_server] Server closed the connection.\n");
             break;
         } else {
             // SSL error handling
-            int ssl_error = SSL_get_error(ssl, bytes_read);
+            int ssl_error = SSL_get_error(server->ssl, bytes_read);
             if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE) {
                 continue; // Retry reading or writing
             } else {
+                perror("ERROR SSL_read");
                 fprintf(stderr, "[read_from_server] SSL read error: %d\n", ssl_error);
                 ERR_print_errors_fp(stderr);
                 return -1; // Return error
@@ -696,7 +732,7 @@ ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size) {
             printf("\n...\n");
         }
     }
-
+    printf("RETURNING TOTAL BYTES!!!\n");
     return total_bytes; // Return the total number of bytes read
 }
 
@@ -754,6 +790,7 @@ int handle_connect_request(client_node *client, SSL_CTX *server_ctx, X509 *ca_ce
         return -1;
     }
 
+    printf("Generating domain CA.\n");
     // Dynamically generate domain-specific certificate and key using EVP_PKEY_CTX
     EVP_PKEY *pkey = EVP_PKEY_new();
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
@@ -766,8 +803,10 @@ int handle_connect_request(client_node *client, SSL_CTX *server_ctx, X509 *ca_ce
     }
 
     // Free the context after key generation
+    printf("Freeing SSL Context.\n");
     EVP_PKEY_CTX_free(ctx);
 
+    printf("Generating CA Certificate.\n");
     X509 *cert = generate_certificate(hostname, pkey, ca_pkey, ca_cert);
     if (!cert || !pkey) {
         fprintf(stderr, "[handle_connect_request] Failed to generate domain-specific certificate for %s.\n", hostname);
@@ -775,6 +814,7 @@ int handle_connect_request(client_node *client, SSL_CTX *server_ctx, X509 *ca_ce
     }
 
     // Create new SSL session for the client
+    printf("Doing an SSL NEW with server context.\n");
     client->ssl = SSL_new(server_ctx);
     if (!client->ssl) {
         perror("[handle_connect_request] Failed to create SSL session for client.");
@@ -795,6 +835,7 @@ int handle_connect_request(client_node *client, SSL_CTX *server_ctx, X509 *ca_ce
     SSL_set_info_callback(client->ssl, SSL_info_callback);
 
     // Perform SSL handshake with the client
+    printf("Doing an SSL Handshake with the client.\n");
     int ret = SSL_accept(client->ssl);
     if (ret <= 0) {
         int err = SSL_get_error(client->ssl, ret);
@@ -804,7 +845,6 @@ int handle_connect_request(client_node *client, SSL_CTX *server_ctx, X509 *ca_ce
         client->ssl = NULL;
         return -1;
     }
-
 
     printf("[handle_connect_request] SSL handshake completed with client.\n");
 
@@ -851,6 +891,102 @@ int handle_response_in_cache(char *url, cache *cache, client_node *client) {
 
     free(response_buffer);
     return 0; // success
+}
+
+ssize_t read_from_socket_simple(int socketfd, char *buffer, ssize_t buffer_size, int request) {
+    ssize_t bytes_read = 0;
+    ssize_t total_bytes = 0;
+    ssize_t content_length = -1; 
+    char *end_header; 
+
+    // Read the data from the socket in chunks
+    int header_received = 0; 
+    while ((bytes_read = read(socketfd, buffer + total_bytes, buffer_size - total_bytes - 1)) > 0 && (!ctrl_c_ended)) {
+        total_bytes += bytes_read;
+        printf("Bytes read so far: %zd\n", total_bytes);
+        printf("Buffer size: %zd, bytes read: %zd\n", buffer_size, bytes_read);
+        printf("buffer_size - total_bytes - 1: %zd\n", buffer_size - total_bytes - 1);
+
+        if (!header_received) {
+            buffer[total_bytes] = '\0'; // Null terminate the header
+            end_header = strstr(buffer, "\r\n\r\n");
+            if (end_header) {
+                header_received = 1;
+                
+                if (request) {
+                    break;
+                }               
+                // Extract Content-Length
+                char *content_length_str = strstr(buffer, "Content-Length: ");
+                if (content_length_str) {
+                    content_length_str += strlen("Content-Length: "); // Move past the header name
+                    content_length = atoi(content_length_str); // Convert to long
+                }
+                // printf("Response body length is %d\n", content_length);
+            }
+        }
+        // Break if buffer is full
+        if (total_bytes >= buffer_size - 1) {
+            break;
+        }
+        // Break if header is received and we've read enough bytes
+        if (header_received && content_length != -1 && total_bytes >= (content_length + (end_header - buffer + 4))) {
+            break;
+        }
+    }
+    if (bytes_read == -1) {
+        // Error handling
+        perror("Error reading from socket");
+        return -1;
+    }
+    return total_bytes; // Return the total number of bytes read
+}
+
+int handle_non_ssl_request(char *request_buffer, int client_socketfd) {
+    char hostname[MAX_HOSTNAME_SIZE];
+    char port[PORT_SIZE];
+    get_hostname_and_port(request_buffer, hostname, MAX_HOSTNAME_SIZE, port, PORT_SIZE);
+
+    // if no port specified set it to 80 
+    int request_portno = (strlen(port) != 0) ? atoi(port) : DEFAULT_PORT;
+
+    struct sockaddr_in server_addr; 
+    int server_socketfd = create_simple_client_socket(server_addr, request_portno, hostname);
+
+    if (server_socketfd == -1) {
+        perror("ERROR openening the socket!");
+        return -1;
+    }
+
+    printf("This is the request buffer: %s\n", request_buffer);
+            
+    // forward request to the server 
+    int n = write(server_socketfd, request_buffer, strlen(request_buffer));
+    if (n < 0) {
+        perror("ERROR writing to the server");
+        return -1;
+    }
+    printf("Request forwarded to the server!\n");
+
+    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate 10MB
+    // read response from the server
+    int response_size = read_from_socket_simple(server_socketfd, response_buffer, MAX_RESPONSE_SIZE, 0);
+    if (response_size < 0) {
+        close(server_socketfd);
+        return -1;
+    }
+
+    // close connection with the server
+    close(server_socketfd);
+
+    // forward response to the client
+    n = write(client_socketfd, response_buffer, response_size);
+    if (n < 0) {
+        perror("ERROR writing to socket");
+        return -1;
+    }
+
+    return 0;
 }
 
 int start_proxy(int portno) {
@@ -998,7 +1134,7 @@ int start_proxy(int portno) {
             } else {
                 /**** Handle client connection ****/
                 if (in_hashmap_proxy(clilist_hashmap, i)) {
-                    printf("HANDLING A CLIENT CONNECTION!\n");
+                    printf("HANDLING A CLIENT CONNECTION FD: %d!\n", i);
                     client_node *client = get_from_hashmap_proxy(clilist_hashmap, i);
                     if (client == NULL) {
                         fprintf(stderr, "Client with fd %d not found in hashmap.\n", i);
@@ -1019,10 +1155,11 @@ int start_proxy(int portno) {
                     } else {
                         printf("[start_proxy] Client establishing an SSL connection...\n");
                         int read_bytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE - 1);
-                        if (read_bytes < 0) {
+                        if (read_bytes <= 0) {
                             perror("[start_proxy] read");
                             close(client->socketfd);
                             FD_CLR(client->socketfd, &master_set);
+                            continue;
                         } else if (read_bytes > 0) {
                             printf("[start_proxy] Non-SSL Request Buffer: %.*s\n", read_bytes, request_buffer);
                             if (strstr(request_buffer, "CONNECT") != NULL) {
@@ -1032,12 +1169,16 @@ int start_proxy(int portno) {
                                     close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                                     continue;
                                 }
-                                // Connection is now wrapped in SSL, wait for further requests
+                            } else {
+                                // Could be any other http request
+                                handle_non_ssl_request(request_buffer, i);
                                 continue;
                             }
                         }
                     }
-
+                    if (!client->ssl) {
+                        printf("CLIENTSSL IS NULL, MIGHT LEAD TO A SSL_READ ERROR!\n");
+                    }
                     // Read request
                     int nbytes = SSL_read(client->ssl, request_buffer, MAX_REQUEST_SIZE);
                     if (nbytes <= 0) {
@@ -1045,6 +1186,7 @@ int start_proxy(int portno) {
                         if (ssl_error == SSL_ERROR_ZERO_RETURN) {
                             printf("[start_proxy] Client %d closed SSL connection.\n", client->socketfd);
                         } else {
+                            perror("ERROR SSL read");
                             fprintf(stderr, "[start_proxy] SSL read error for client %d: %d.\n", client->socketfd, ssl_error);
                             ERR_print_errors_fp(stderr);
                         }
@@ -1148,48 +1290,82 @@ int start_proxy(int portno) {
 
                 } else if (in_hashmap_proxy(server_hashmap, i)) {
                     /**** Handle server connection ****/
-                    printf("HANDLING A SERVER CONNECTION!\n");
+                    printf("HANDLING A SERVER CONNECTION FD %d!\n", i);
                     server_node *server = get_from_hashmap_proxy(server_hashmap, i);
-                    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate 10MB
-                    size_t response_size;
-
-                    // Read response from the server
-                    printf("[start_proxy] Reading response from server!\n");
-                    response_size = read_from_server(server->ssl, response_buffer, MAX_RESPONSE_SIZE);
+                    printf("Got socket from hashmap %d!\n", i);
+                    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate 1MB
+                    printf("Allocated response buffer!\n");
+                    
+                    if (!server->ssl) {
+                        printf("SSL IS NULLLL\n");
+                    }
+                    size_t response_size = SSL_read(server->ssl, response_buffer, MAX_RESPONSE_SIZE);
+                    printf("Read %zd bytes from the server!\n", response_size);
 
                     if (response_size <= 0) {
-                        close(server->sockfd);
+                        // SSL_shutdown(server->ssl);
+                        printf("SSL FREEING SOCKET FD %d!\n", server->sockfd);
                         SSL_free(server->ssl);
-                        FD_CLR(i, &master_set);
-                        remove_from_hashmap_proxy(server_hashmap, server_socketfd);
+                        printf("CLOSING SOCKET FD %d!\n", server->sockfd);
+                        close(server->sockfd);
+                        remove_from_hashmap_proxy(server_hashmap, server->sockfd);
                         free(response_buffer);
-                        if (response_size < 0) {
-                            fprintf(stderr, "ERROR reading response from the server.\n");
-                        }
+                        FD_CLR(i, &master_set);
                         continue;
                     }
-
-                    // Either put or update the cache (put function takes care of both)
-                    int max_age = get_max_age(response_buffer);
-                    printf("[handle_request] This is the max age: %d\n", max_age);
-                    if (server->is_get_request) {
-                        put(cache, server->url, max_age, response_buffer, response_size);
-                    }
-                    printf("[handle_request] Added URL <%s> to cache!\n", server->url);
 
                     // Forward response to client
                     if (SSL_write(server->client_ssl, response_buffer, response_size) <= 0) {
                         fprintf(stderr, "ERROR writing response to client.\n");
                         ERR_print_errors_fp(stderr);
+                        free(response_buffer);
                         continue;
                     }
-                    // Close the server connection TODO: Should we make this persistent?
-                    SSL_shutdown(server->ssl);
-                    SSL_free(server->ssl);
-                    close(server->sockfd);
-                    remove_from_hashmap_proxy(server_hashmap, server->sockfd);
-                    free(response_buffer);
-                    FD_CLR(i, &master_set);
+
+                    // // Read response from the server
+                    // printf("[start_proxy] Reading response from server!\n");
+                    // response_size = read_from_server(server, response_buffer, MAX_RESPONSE_SIZE, 
+                    //                                  server_hashmap, &master_set);
+
+                    // if (response_size <= 0) {
+                    //     close(server->sockfd);
+                    //     SSL_free(server->ssl);
+                    //     FD_CLR(i, &master_set);
+                    //     remove_from_hashmap_proxy(server_hashmap, server->sockfd);
+                    //     free(response_buffer);
+                    //     if (response_size < 0) {
+                    //         fprintf(stderr, "ERROR reading response from the server.\n");
+                    //     }
+                    //     continue;
+                    // }
+
+                    // // Either put or update the cache (put function takes care of both)
+                    // // int max_age = get_max_age(response_buffer);
+                    // // printf("[handle_request] This is the max age: %d\n", max_age);
+                    // // if (server->is_get_request) {
+                    // //     put(cache, server->url, max_age, response_buffer, response_size);
+                    // // }
+                    // // printf("[handle_request] Added URL <%s> to cache!\n", server->url);
+
+                    // // Forward response to client
+                    // if (SSL_write(server->client_ssl, response_buffer, response_size) <= 0) {
+                    //     fprintf(stderr, "ERROR writing response to client.\n");
+                    //     ERR_print_errors_fp(stderr);
+                    //     continue;
+                    // }
+
+                    // continue; // REMOVING THIS BREAKS YOUTUBE, WHY?
+                    // if (strstr(response_buffer, "Connection: keep-alive") == NULL) {
+                    //     printf("No keep-alive header found. Closing server connection...\n");
+                    //     SSL_shutdown(server->ssl);
+                    //     SSL_free(server->ssl);
+                    //     close(server->sockfd);
+                    //     remove_from_hashmap_proxy(server_hashmap, server->sockfd);
+                    //     FD_CLR(i, &master_set);
+                    // }
+
+                    free(response_buffer);  // Free the allocated buffer after use
+
                 } else {
                     printf("SANITY CHECK: Should never reach here!\n");
                     return -1;

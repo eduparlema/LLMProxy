@@ -80,6 +80,7 @@ int handle_request(client_node *client, hashmap_proxy *server_hashmap, int clien
    buffer_size - size of the buffer.
    Returns the number of bytes read, or -1 on error.
 */
-ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size);
+ssize_t read_from_server(server_node *server, char *buffer, ssize_t buffer_size,
+                            hashmap_proxy *server_hashmap, fd_set *master_set);
 
 #endif
