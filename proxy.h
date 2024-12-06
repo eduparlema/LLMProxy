@@ -14,13 +14,12 @@ typedef struct {
 
 typedef struct {
    int sockfd; // Socket file descriptor
+   int clientfd;
    SSL *client_ssl; // Its corresponding client's socket
    SSL *ssl;  // SSL context for secure communication
-   int is_get_request; // Only add to cache if is get request
-   char url[MAX_URL_LENGTH]; // Url to add to cache
 } server_node;
 
-server_node *create_server_node(int sockfd, SSL *client_ssl, SSL *ssl, int is_get_request, char *url);
+server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl);
 
 /* start_proxy
    Starts the proxy so that it is actively listening at portno.
