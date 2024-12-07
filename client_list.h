@@ -14,7 +14,7 @@
 #define DEFAULT_TIMEOUT 600
 #define MAX_URL_LENGTH 2000
 #define KB (1024)
-#define MAX_REQUEST_SIZE (16 * KB) // 8 kilobytes
+#define MAX_REQUEST_SIZE (16 * KB) // 16 kilobytes
 
 // Note: Since TCP ensures that we receive the data in order, a client can
 // have at most one incomplete message at a time.
