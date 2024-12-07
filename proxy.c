@@ -129,11 +129,20 @@ X509 *generate_certificate(char *hostname, EVP_PKEY *pkey, EVP_PKEY *ca_pkey, X5
     X509_set_version(cert, 2);
 
     // Assign a unique serial number
-    ASN1_INTEGER_set(X509_get_serialNumber(cert), (long)time(NULL)); // Use current timestamp for serial number
+    ASN1_INTEGER *serial = ASN1_INTEGER_new();
+    if (!serial || !ASN1_INTEGER_set(serial, rand())) {
+        fprintf(stderr, "[generate_certificate] Failed to set serial number.\n");
+        ASN1_INTEGER_free(serial);
+        X509_free(cert);
+        return NULL;
+    }
+    X509_set_serialNumber(cert, serial);
+    ASN1_INTEGER_free(serial);
 
     // Set the certificate's validity period
+    long valid_days = 365;
     X509_gmtime_adj(X509_get_notBefore(cert), 0);
-    X509_gmtime_adj(X509_get_notAfter(cert), 31536000L); // 1 year validity
+    X509_gmtime_adj(X509_get_notAfter(cert), 60 * 60 * 24 * valid_days);
 
     // Set the public key for the certificate
     X509_set_pubkey(cert, pkey);
@@ -151,49 +160,16 @@ X509 *generate_certificate(char *hostname, EVP_PKEY *pkey, EVP_PKEY *ca_pkey, X5
     X509_set_issuer_name(cert, X509_get_subject_name(ca_cert));
 
     // Add Subject Alternative Name (SAN) extension
-    X509_EXTENSION *ext = NULL;
-    STACK_OF(GENERAL_NAME) *san_names = sk_GENERAL_NAME_new_null();
-    if (!san_names) {
-        fprintf(stderr, "[generate_certificate] Failed to allocate SAN names.\n");
-        X509_free(cert);
-        return NULL;
-    }
-
-    GENERAL_NAME *san_name = GENERAL_NAME_new();
-    if (san_name) {
-        // Set the SAN type to DNS name
-        ASN1_IA5STRING *ia5_hostname = ASN1_IA5STRING_new();
-        if (ia5_hostname) {
-            ASN1_STRING_set(ia5_hostname, hostname, strlen(hostname));
-            GENERAL_NAME_set0_value(san_name, GEN_DNS, ia5_hostname);
-            sk_GENERAL_NAME_push(san_names, san_name);
-        } else {
-            fprintf(stderr, "[generate_certificate] Failed to allocate ASN1_IA5STRING for hostname.\n");
-            GENERAL_NAME_free(san_name);
-            sk_GENERAL_NAME_free(san_names);
-            X509_free(cert);
-            return NULL;
-        }
-    } else {
-        fprintf(stderr, "[generate_certificate] Failed to allocate GENERAL_NAME.\n");
-        sk_GENERAL_NAME_free(san_names);
-        X509_free(cert);
-        return NULL;
-    }
-
-    // Create the SAN extension
-    ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, san_names);
+    char san_entry[256];
+    snprintf(san_entry, sizeof(san_entry), "DNS:%s", hostname);
+    X509_EXTENSION *ext = X509V3_EXT_conf_nid(NULL, NULL, NID_subject_alt_name, san_entry);
     if (!ext || !X509_add_ext(cert, ext, -1)) {
         fprintf(stderr, "[generate_certificate] Failed to add SAN extension.\n");
         X509_EXTENSION_free(ext);
-        sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
         X509_free(cert);
         return NULL;
     }
-
-    // Cleanup
     X509_EXTENSION_free(ext);
-    sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
 
     // Sign the certificate using the CA's private key
     if (!X509_sign(cert, ca_pkey, EVP_sha256())) {
@@ -285,12 +261,12 @@ int create_simple_client_socket(struct sockaddr_in server_addr, int portno, char
     }
     memset((char *) &server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    bcopy((char *)server->h_addr, 
+    bcopy((char *)server->h_addr,
             (char *)&server_addr.sin_addr.s_addr,
             server->h_length);
     server_addr.sin_port = htons(portno);
 
-    // connect with the server 
+    // connect with the server
     if ((connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr))) < 0) {
         perror("ERROR connecting with the server");
         return -1;
@@ -640,10 +616,10 @@ int handle_connect_request(client_node *client, SSL_CTX *server_ctx, X509 *ca_ce
 ssize_t read_from_socket_simple(int socketfd, char *buffer, ssize_t buffer_size, int request) {
     ssize_t bytes_read = 0;
     ssize_t total_bytes = 0;
-    ssize_t content_length = -1; 
-    char *end_header; 
+    ssize_t content_length = -1;
+    char *end_header;
     // Read the data from the socket in chunks
-    int header_received = 0; 
+    int header_received = 0;
     while ((bytes_read = read(socketfd, buffer + total_bytes, buffer_size - total_bytes - 1)) > 0 && (!ctrl_c_ended)) {
         total_bytes += bytes_read;
         printf("Bytes read so far: %zd\n", total_bytes);
@@ -654,10 +630,10 @@ ssize_t read_from_socket_simple(int socketfd, char *buffer, ssize_t buffer_size,
             end_header = strstr(buffer, "\r\n\r\n");
             if (end_header) {
                 header_received = 1;
-                
+
                 if (request) {
                     break;
-                }               
+                }
                 // Extract Content-Length
                 char *content_length_str = strstr(buffer, "Content-Length: ");
                 if (content_length_str) {
@@ -689,10 +665,10 @@ int handle_non_ssl_request(char *request_buffer, int client_socketfd, hashmap_pr
     char port[PORT_SIZE];
     get_hostname_and_port(request_buffer, hostname, MAX_HOSTNAME_SIZE, port, PORT_SIZE);
 
-    // if no port specified set it to 80 
+    // if no port specified set it to 80
     int request_portno = (strlen(port) != 0) ? atoi(port) : DEFAULT_PORT;
 
-    struct sockaddr_in server_addr; 
+    struct sockaddr_in server_addr;
     int server_socketfd = create_simple_client_socket(server_addr, request_portno, hostname);
 
     printf("CREATED SOCKET WITH FD: %d\n", server_socketfd);
@@ -703,8 +679,8 @@ int handle_non_ssl_request(char *request_buffer, int client_socketfd, hashmap_pr
     }
 
     printf("This is the request buffer: %s\n", request_buffer);
-            
-    // forward request to the server 
+
+    // forward request to the server
     int n = write(server_socketfd, request_buffer, strlen(request_buffer));
     if (n < 0) {
         perror("ERROR writing to the server");
@@ -981,7 +957,7 @@ int start_proxy(int portno) {
                                     perror("start_proxy] Failed to handle CONNECT request from client.\n");
                                     close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                                 }
-                            } 
+                            }
                             else {
                                 // Could be any other http request
                                 // printf("HANDLING NON SSL REQUEST!\n");
@@ -1079,7 +1055,7 @@ int start_proxy(int portno) {
                         FD_SET(server->sockfd, &master_set);
                         fd_max = (server->sockfd > fd_max) ? server->sockfd : fd_max;
                         printf("Added server sockfd %d to master set.\n", server->sockfd);
-                        
+
                         // reset the partial request buffer from client
                         memset(client->request_buffer, 0, MAX_REQUEST_SIZE);
                         client->bytes_received = 0;
@@ -1165,7 +1141,7 @@ int start_proxy(int portno) {
                                 printf("REMOVED SERVER FROM HASHMAP\n");
                                 FD_CLR(server->sockfd, &master_set);
                             }
-                        } 
+                        }
                         else {
                             printf("Neither content length nor transfer-encoding found!\n");
                             printf("----------------------------------");
@@ -1179,9 +1155,9 @@ int start_proxy(int portno) {
                             // remove_from_hashmap_proxy(server_hashmap, server->sockfd);
                             // FD_CLR(server->sockfd, &master_set);
                         }
-                        
-                    } 
-                
+
+                    }
+
                     free(response_buffer);  // Free the allocated buffer after use
 
                 } else {
@@ -1190,7 +1166,7 @@ int start_proxy(int portno) {
                 }
             }
         }
-        fd_max = find_max_fd(&master_set, fd_max); 
+        fd_max = find_max_fd(&master_set, fd_max);
     }
 
     // Cleanup resources
