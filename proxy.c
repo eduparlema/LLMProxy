@@ -225,7 +225,7 @@ server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *
     node->content_length = 0;
     node->bytes_received = 0;
     node->chunked = 0;
-    node->keep_alive = 0;
+    node->keep_alive = 1;
     strncpy(node->hostname, hostname, MAX_HOSTNAME_SIZE);
 
     return node;
@@ -758,21 +758,34 @@ int parse_http_headers(const char *response, size_t response_size, server_node *
     char *headers = strndup(response, headers_length);
 
     // Look for Content-Length
-    char *content_length_str = strstr(headers, "Content-Length:");
+    char *content_length_str = strstr(headers, "\nContent-Length:");
+    if (!content_length_str) {
+        printf("Did not find Cotent-Lenght!!!!\n");
+        content_length_str = strstr(headers, "\ncontent-length");
+    }
     if (content_length_str) {
-        server->content_length = strtoul(content_length_str + 15, NULL, 10);
+        printf("Content length available\n");
+        content_length_str += strlen("Content-Length: "); // Move past the header name
+        server->content_length = atoi(content_length_str);
+    } else {
+        printf("Did not find content-length: \n");
     }
 
-    // Check for chunked transfer encoding
-    if (strstr(headers, "Transfer-Encoding: chunked")) {
+    // Check for transfer encoding
+    char *transfer_encoding = strstr(headers, "Transfer-Encoding: chunked");
+    if (!transfer_encoding) {
+        transfer_encoding = strstr(headers, "transfer-encoding: chunked");
+    }
+    if (transfer_encoding) {
         server->chunked = 1;
+        printf("[read_from_server] Transfer-Encoding: chunked detected.\n");
     }
 
     // Check for Connection header
-    if (strstr(headers, "Connection: close")) {
-        server->keep_alive = 0;
-    } else if (strstr(headers, "Connection: keep-alive")) {
+    if (strstr(headers, "Connection: keep-alive")) {
         server->keep_alive = 1;
+    } else if (strstr(headers, "Connection: close") || strstr(headers, "connection: close")) {
+        server->keep_alive = 0;
     }
 
     free(headers);
@@ -960,6 +973,7 @@ int start_proxy(int portno) {
                             }
                         } else if (read_bytes > 0) {
                             printf("[start_proxy] Non-SSL Request Buffer: %.*s\n", read_bytes, request_buffer);
+                            // char *request_buffer_header = strstr(request_buffer, "\r\n\r\n");
                             if (strstr(request_buffer, "CONNECT") != NULL) {
                                 // Handle CONNECT request and perform SSL handshake
                                 printf("[start_proxy] Client establishing an SSL connection...\n");
@@ -1094,6 +1108,7 @@ int start_proxy(int portno) {
                         response_size = SSL_read(server->ssl, response_buffer, MAX_RESPONSE_SIZE);
                         printf("Read %zd bytes from server!\n", response_size);
 
+                        printf("[start_proxy] Response size: %zd\n", response_size);
                         if (response_size <= 0) {
                             printf("SSL FREEING SOCKET FD %d!\n", server->sockfd);
                             SSL_free(server->ssl);
@@ -1106,39 +1121,64 @@ int start_proxy(int portno) {
                         }
 
                         // Forward response to client
+                        printf("[start_proxy] Forwarding response to client...\n");
                         if (SSL_write(server->client_ssl, response_buffer, response_size) <= 0) {
+                            printf("[start_proxy] Issue doing SSL_write to client_ssl...\n");
                             fprintf(stderr, "ERROR writing response to client.\n");
-                            perror("ERROR writing response to client");
+                            perror("ERROR writing  to client");
                             ERR_print_errors_fp(stderr);
+                            SSL_free(server->ssl);
+                            printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
+                            close(server->sockfd);
+                            remove_from_hashmap_proxy(server_hashmap, server->sockfd);
                             free(response_buffer);
+                            FD_CLR(i, &master_set);
+                            client_node *client = get_from_hashmap_proxy(clilist_hashmap, server->clientfd);
+                            close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                             continue;
                         }
 
-                        // if (!server->header_parsed) {
-                        //     if (parse_http_headers(response_buffer, response_size, server) == 0) {
-                        //         server->header_parsed = 1;
-                        //         printf("Header parsed! Content-Length: %zu, Chunked: %d, Alive: %d\n",
-                        //             server->content_length, server->chunked, server->keep_alive);
-                        //     } else {
-                        //         free(response_buffer);
-                        //         continue;
-                        //     }
-                        // }
+                        if (!server->header_parsed) {
+                            if (parse_http_headers(response_buffer, response_size, server) == 0) {
+                                server->header_parsed = 1;
+                                printf("Header parsed! Content-Length: %zu, Chunked: %d, Alive: %d\n",
+                                    server->content_length, server->chunked, server->keep_alive);
+                            } else {
+                                free(response_buffer);
+                                continue;
+                            }
+                        }
 
-                        // if (server->chunked) {
-                        //     // TODO: CLOSE WHEN LAST CHUNKED RECEIVED!
-                        // } else if (server->keep_alive && server->content_length > 0) {
-                        //     server->bytes_received += response_size;
-                        //     if (server->bytes_received >= server->content_length) {
-                        //         printf("Full response received (Content-Length matched).\n");
-                        //         close(server->sockfd);
-                        //         if (server->ssl) {
-                        //             SSL_free(server->ssl);
-                        //         }
-                        //         remove_from_hashmap_proxy(server_hashmap, server->sockfd);
-                        //         FD_CLR(server->sockfd, &master_set);
-                        //     }
-                        // }
+                        if (server->chunked) {
+                            // TODO: CLOSE WHEN LAST CHUNKED RECEIVED!
+                        } else if (!server->keep_alive && server->content_length > 0) {
+                            server->bytes_received += response_size;
+                            if (server->bytes_received >= server->content_length) {
+                                printf("Full response received (Content-Length matched).\n");
+                                close(server->sockfd);
+                                if (server->ssl) {
+                                    printf("ABOUT TO FREE SSL!\n");
+                                    SSL_free(server->ssl);
+                                    printf("FREED SSL server!\n");
+                                }
+                                remove_from_hashmap_proxy(server_hashmap, server->sockfd);
+                                printf("REMOVED SERVER FROM HASHMAP\n");
+                                FD_CLR(server->sockfd, &master_set);
+                            }
+                        } 
+                        else {
+                            printf("Neither content length nor transfer-encoding found!\n");
+                            printf("----------------------------------");
+                            printf("Header: \n%s\n", response_buffer);
+                            printf("----------------------------------");
+                            // printf("Closing server socket!\n");
+                            // close(server->sockfd);
+                            // if (server->ssl) {
+                            //     SSL_free(server->ssl);
+                            // }
+                            // remove_from_hashmap_proxy(server_hashmap, server->sockfd);
+                            // FD_CLR(server->sockfd, &master_set);
+                        }
                         
                     } 
                 
