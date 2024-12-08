@@ -12,10 +12,12 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
+#include <curl/curl.h>
 
 #include "proxy.h"
 #include "client_list.h"
 #include "hashmap_proxy.h"
+#include "llm_utils.h"
 
 #define KB (1024)
 #define MB (KB * KB)
@@ -1119,6 +1121,25 @@ int start_proxy(int portno) {
                             free(response_buffer);
                             FD_CLR(i, &master_set);
                             continue;
+                        }
+
+                        // Check if the request is for a Reddit post
+                        if (strstr(CURRENT_LINK, "reddit.com") && strstr(CURRENT_LINK, "/comments/")) {
+                            printf("[start_proxy] Detected Reddit post request.\n");
+
+                            // Extract Reddit post content
+                            char post_content[4096] = {0};
+                            if (extract_reddit_post_content(RESPONSE_BUFFER, post_content, sizeof(post_content)) < 0) {
+                                fprintf(stderr, "[handle_request] Failed to extract Reddit post content.\n");
+                                free(RESPONSE_BUFFER);
+                                CLOSE_THE_CONNECTION
+                                continue;
+                            }
+
+                            // Generate summary
+                            char summary[4096] = {0};
+                            llmproxy_request("4o-mini", "Summarize this post", post_content, summary);
+                            printf("Response: %s\n", summary);
                         }
 
                         // Forward response to client
