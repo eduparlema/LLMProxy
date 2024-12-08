@@ -931,7 +931,9 @@ int start_proxy(int portno) {
                     if (!client->ssl) {
                         int read_bytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE - 1);
                         if (read_bytes <= 0) {
-                            perror("[start_proxy] read");
+                            if (read_bytes < 0) {
+                                perror("read");
+                            } 
                             close(client->socketfd);
                             FD_CLR(client->socketfd, &master_set);
                             // Remove the client from the hashmap
@@ -971,6 +973,7 @@ int start_proxy(int portno) {
 
 
                                 // IGNORE
+                                FD_CLR(i, &master_set);
                                 continue;
                             }
                         }
@@ -1085,7 +1088,7 @@ int start_proxy(int portno) {
                         printf("Read %zd bytes from server!\n", response_size);
 
                         printf("[start_proxy] Response size: %zd\n", response_size);
-                        if (response_size <= 0) {
+                        if (response_size <= 0 || response_size == -1) {
                             printf("SSL FREEING SOCKET FD %d!\n", server->sockfd);
                             SSL_free(server->ssl);
                             printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
@@ -1098,19 +1101,23 @@ int start_proxy(int portno) {
 
                         // Forward response to client
                         printf("[start_proxy] Forwarding response to client...\n");
-                        if (SSL_write(server->client_ssl, response_buffer, response_size) <= 0) {
+                        int res = SSL_write(server->client_ssl, response_buffer, response_size);
+                        if (res <= 0) {
                             printf("[start_proxy] Issue doing SSL_write to client_ssl...\n");
-                            fprintf(stderr, "ERROR writing response to client.\n");
-                            perror("ERROR writing  to client");
-                            ERR_print_errors_fp(stderr);
+                            if (res < 0) {
+                                fprintf(stderr, "ERROR writing response to client.\n");
+                                perror("ERROR writing  to client");
+                                ERR_print_errors_fp(stderr);
+                                client_node *client = get_from_hashmap_proxy(clilist_hashmap, server->clientfd);
+                                close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+                            }
+                            
                             SSL_free(server->ssl);
                             printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
                             close(server->sockfd);
                             remove_from_hashmap_proxy(server_hashmap, server->sockfd);
                             free(response_buffer);
                             FD_CLR(i, &master_set);
-                            client_node *client = get_from_hashmap_proxy(clilist_hashmap, server->clientfd);
-                            close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                             continue;
                         }
 
