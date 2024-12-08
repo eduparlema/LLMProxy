@@ -193,7 +193,7 @@ int find_max_fd(fd_set *set, int max_possible_fd) {
     return max_fd;
 }
 
-server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname){
+server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname, char *url){
     server_node *node = (server_node *) malloc(sizeof(server_node));
     node->sockfd = sockfd;
     node->clientfd = clientfd;
@@ -205,7 +205,15 @@ server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *
     node->chunked = 0;
     node->keep_alive = 1;
     strncpy(node->hostname, hostname, MAX_HOSTNAME_SIZE);
-
+    if (url) {
+        node->url = strdup(url);
+        if (!node->url) {
+            perror("strdup");
+            node->url = NULL;
+        }
+    } else {
+        node->url = NULL;
+    }
     return node;
 }
 
@@ -770,6 +778,47 @@ int parse_http_headers(const char *response, size_t response_size, server_node *
     return 0;
 }
 
+/**
+ * Extracts the full URL from an HTTP GET request.
+ *
+ * @param httpRequest The HTTP request string to parse for the URL.
+ * @return A dynamically allocated string containing the URL from the GET request,
+ *         or NULL on error.
+ *
+ * This function searches for the "GET" method in the HTTP request and extracts
+ * the URL that follows.
+ * If the "GET " or " HTTP" markers are not found, the function logs an error
+ * and returns NULL.
+ */
+char* getURLFromRequest(const char httpRequest[]) {
+    // Create a local copy of the httpRequest
+    char requestCopy[MAX_REQUEST_SIZE];
+    strncpy(requestCopy, httpRequest, MAX_REQUEST_SIZE - 1);
+    requestCopy[MAX_REQUEST_SIZE - 1] = '\0';
+
+    // Find the first occurrence of "GET "
+    char *GetLine = strstr(requestCopy, "GET ");
+    if (GetLine == NULL) {
+        fprintf(stderr, "getURLFromRequest - ERROR: GET line not found in the request.\n");
+        return NULL;
+    }
+
+     // Move past "GET " to the actual URL
+    GetLine += strlen("GET ");
+
+    // Find the end of the URL (' HTTP')
+    char *endOfGetLine = strstr(GetLine, " HTTP");
+    if (endOfGetLine != NULL) {
+        *endOfGetLine = '\0';
+    } else {
+        fprintf(stderr, "getURLFromRequest - ERROR: End of GET line not found.\n");
+        return NULL;
+    }
+
+    // Return a copy of the URL
+    return strdup(GetLine);
+}
+
 int start_proxy(int portno) {
     printf("[start_proxy] Proxy started!\n");
 
@@ -1070,8 +1119,9 @@ int start_proxy(int portno) {
 
                         printf("Request forwarded to the server!\n");
 
+                        char *url = getURLFromRequest(request_buffer);
                         // create server node
-                        server_node *server = create_server_node(server_connection.sockfd, i, client->ssl, server_connection.ssl, hostname);
+                        server_node *server = create_server_node(server_connection.sockfd, i, client->ssl, server_connection.ssl, hostname, url);
                         // add server to hashmap
                         if (insert_into_hashmap_proxy(server_hashmap, server_connection.sockfd, server) < 0) {
                             fprintf(stderr, "ERROR inserting server node into hashmap.\n");
@@ -1127,23 +1177,35 @@ int start_proxy(int portno) {
                         }
 
                         // Check if the request is for a Reddit post
-                        if (strstr(CURRENT_LINK, "reddit.com") && strstr(CURRENT_LINK, "/comments/")) {
-                            printf("[start_proxy] Detected Reddit post request.\n");
+                        if (server->url) {
+                            if (strstr(server->url, "reddit.com") && strstr(server->url, "/comments/")) {
+                                printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n");
+                                printf("[start_proxy] Detected Reddit post request.\n");
+                                printf(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n");
 
-                            // Extract Reddit post content
-                            char post_content[4096] = {0};
-                            if (extract_reddit_post_content(RESPONSE_BUFFER, post_content, sizeof(post_content)) < 0) {
-                                fprintf(stderr, "[handle_request] Failed to extract Reddit post content.\n");
-                                free(RESPONSE_BUFFER);
-                                CLOSE_THE_CONNECTION
-                                continue;
+                                // Extract Reddit post content
+                                char post_content[4096] = {0};
+                                if (extract_reddit_post_content(response_buffer, post_content, sizeof(post_content)) < 0) {
+                                    fprintf(stderr, "[handle_request] Failed to extract Reddit post content.\n");
+                                    free(response_buffer);
+                                    printf("SSL FREEING SOCKET FD %d!\n", server->sockfd);
+                                    SSL_free(server->ssl);
+                                    printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
+                                    close(server->sockfd);
+                                    remove_from_hashmap_proxy(server_hashmap, server->sockfd);
+                                    free(response_buffer);
+                                    FD_CLR(i, &master_set);
+                                    continue;
+                                }
+
+                                // Generate summary
+                                char summary[4096] = {0};
+                                llmproxy_request("4o-mini", "Summarize this post", post_content, summary);
+                                printf("Response: %s\n", summary);
                             }
 
-                            // Generate summary
-                            char summary[4096] = {0};
-                            llmproxy_request("4o-mini", "Summarize this post", post_content, summary);
-                            printf("Response: %s\n", summary);
                         }
+                        
 
                         // Forward response to client
                         printf("[start_proxy] Forwarding response to client...\n");

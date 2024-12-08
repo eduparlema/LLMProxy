@@ -25,9 +25,10 @@ typedef struct {
    size_t bytes_received;
    int chunked;
    int keep_alive;
+   char *url;
 } server_node;
 
-server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname);
+server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname, char *url);
 
 /* start_proxy
    Starts the proxy so that it is actively listening at portno.
