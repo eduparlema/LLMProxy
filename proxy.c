@@ -931,7 +931,10 @@ int start_proxy(int portno) {
                     if (!client->ssl) {
                         int read_bytes = read(client->socketfd, request_buffer, MAX_REQUEST_SIZE - 1);
                         if (read_bytes <= 0) {
-                            perror("[start_proxy] read");
+                            if (read_bytes < 0) {
+                                perror("[start_proxy] read");
+                            }
+                            
                             close(client->socketfd);
                             FD_CLR(client->socketfd, &master_set);
 
@@ -986,7 +989,7 @@ int start_proxy(int portno) {
                                     // } else {
                                     //     fd_max = res;
                                     // }
-
+                                    FD_CLR(i, &master_set);
                                     continue; // Ignore non-SSL requests for now
                                 }
 
@@ -1003,7 +1006,7 @@ int start_proxy(int portno) {
 
                     printf("[start_proxy] Client already established a secure connection.\n");
                     // Read request
-                    int nbytes = SSL_read(client->ssl, request_buffer, MAX_REQUEST_SIZE);
+                    int nbytes = SSL_read(client->ssl, request_buffer, MAX_REQUEST_SIZE-1);
                     if (nbytes <= 0) {
                         int ssl_error = SSL_get_error(client->ssl, nbytes);
                         if (ssl_error == SSL_ERROR_ZERO_RETURN) {
@@ -1110,7 +1113,7 @@ int start_proxy(int portno) {
                         printf("Read %zd bytes from server!\n", response_size);
 
                         printf("[start_proxy] Response size: %zd\n", response_size);
-                        if (response_size <= 0) {
+                        if (response_size <= 0 || response_size == -1) {
                             printf("SSL FREEING SOCKET FD %d!\n", server->sockfd);
                             SSL_free(server->ssl);
                             printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
@@ -1123,10 +1126,16 @@ int start_proxy(int portno) {
 
                         // Forward response to client
                         printf("[start_proxy] Forwarding response to client...\n");
-                        if (SSL_write(server->client_ssl, response_buffer, response_size) <= 0) {
-                            printf("[start_proxy] Issue doing SSL_write to client_ssl...\n");
-                            fprintf(stderr, "ERROR writing response to client.\n");
-                            perror("ERROR writing  to client");
+                        int res = SSL_write(server->client_ssl, response_buffer, response_size);
+                        if (res <= 0) {
+                            if (res < 0) {
+                                printf("[start_proxy] Issue doing SSL_write to client_ssl...\n");
+                                fprintf(stderr, "ERROR writing response to client.\n");
+                                perror("ERROR writing  to client");
+                                client_node *client = get_from_hashmap_proxy(clilist_hashmap, server->clientfd);
+                                close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+                            }
+                            
                             ERR_print_errors_fp(stderr);
                             SSL_free(server->ssl);
                             printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
@@ -1134,8 +1143,7 @@ int start_proxy(int portno) {
                             remove_from_hashmap_proxy(server_hashmap, server->sockfd);
                             free(response_buffer);
                             FD_CLR(i, &master_set);
-                            client_node *client = get_from_hashmap_proxy(clilist_hashmap, server->clientfd);
-                            close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+                            
                             continue;
                         }
 
