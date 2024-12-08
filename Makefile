@@ -3,13 +3,17 @@ obj = $(src:.c=.o)
 CC = clang
 CFLAGS = -I/opt/homebrew/opt/openssl@3/include -fsanitize=address -g
 LDFLAGS = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto -fsanitize=address
+
+# Libraries
+LIBS = -lcurl
+
 # Change the C / LD flags with the path to your openssl eduardito
 # I kept fsanitize address to debug issues with memory
 
 
 
 a.out: $(obj)
-	$(CC) -o $@ $^ $(LDFLAGS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(LIBS)
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
