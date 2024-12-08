@@ -934,6 +934,7 @@ int start_proxy(int portno) {
                             perror("[start_proxy] read");
                             close(client->socketfd);
                             FD_CLR(client->socketfd, &master_set);
+
                             // Remove the client from the hashmap
                             if (clilist_hashmap) {
                                 printf("[close_client_connection] Removing client FD %d from hashmap.\n", i);
@@ -949,33 +950,57 @@ int start_proxy(int portno) {
                             }
                         } else if (read_bytes > 0) {
                             printf("[start_proxy] Non-SSL Request Buffer: %.*s\n", read_bytes, request_buffer);
-                            // char *request_buffer_header = strstr(request_buffer, "\r\n\r\n");
-                            if (strstr(request_buffer, "CONNECT") != NULL) {
-                                // Handle CONNECT request and perform SSL handshake
-                                printf("[start_proxy] Client establishing an SSL connection...\n");
-                                if (handle_connect_request(client, ssl_ctx, ca_cert, ca_pkey, request_buffer) < 0) {
-                                    perror("start_proxy] Failed to handle CONNECT request from client.\n");
+                            // Ensure null-termination of the buffer
+                            request_buffer[read_bytes] = '\0';
+
+                            // Find the end of the HTTP header (\r\n\r\n)
+                            char *header_end = strstr(request_buffer, "\r\n\r\n");
+                            if (header_end) {
+                                size_t header_length = header_end - request_buffer + 4; // Include \r\n\r\n
+                                if (header_length > MAX_REQUEST_SIZE) {
+                                    fprintf(stderr, "[start_proxy] Header exceeds maximum size.\n");
                                     close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+                                    free(request_buffer);
+                                    continue;
                                 }
-                            }
-                            else {
-                                // Could be any other http request
-                                // printf("HANDLING NON SSL REQUEST!\n");
-                                // int res = handle_non_ssl_request(request_buffer, i, server_hashmap, &master_set, fd_max);
-                                // if (res < 0) {
-                                //     printf("ERROR with handle_non_ssl_request");
-                                //     exit(EXIT_FAILURE);
-                                // } else {
-                                //     fd_max = res;
-                                // }
 
+                                // Temporarily null-terminate the header for safe processing
+                                char saved_char = request_buffer[header_length];
+                                request_buffer[header_length] = '\0';
 
-                                // IGNORE
-                                continue;
+                                // Check if "CONNECT" is within the header
+                                if (strstr(request_buffer, "CONNECT") != NULL) {
+                                    // Handle CONNECT request and perform SSL handshake
+                                    printf("[start_proxy] Client establishing an SSL connection...\n");
+                                    if (handle_connect_request(client, ssl_ctx, ca_cert, ca_pkey, request_buffer) < 0) {
+                                        perror("[start_proxy] Failed to handle CONNECT request from client.\n");
+                                        close_client_connection(client, &master_set, cli_list, clilist_hashmap);
+                                    }
+                                } else {
+                                    // Handle other types of HTTP requests (e.g., non-SSL)
+                                    // printf("HANDLING NON SSL REQUEST!\n");
+                                    // int res = handle_non_ssl_request(request_buffer, i, server_hashmap, &master_set, fd_max);
+                                    // if (res < 0) {
+                                    //     printf("ERROR with handle_non_ssl_request");
+                                    //     exit(EXIT_FAILURE);
+                                    // } else {
+                                    //     fd_max = res;
+                                    // }
+
+                                    continue; // Ignore non-SSL requests for now
+                                }
+
+                                // Restore the buffer
+                                request_buffer[header_length] = saved_char;
+                            } else {
+                                fprintf(stderr, "[start_proxy] Malformed request: Missing header delimiter.\n");
+                                close_client_connection(client, &master_set, cli_list, clilist_hashmap);
                             }
                         }
+                        free(request_buffer);
                         continue;
                     }
+
                     printf("[start_proxy] Client already established a secure connection.\n");
                     // Read request
                     int nbytes = SSL_read(client->ssl, request_buffer, MAX_REQUEST_SIZE);
