@@ -6,7 +6,11 @@
 #include <openssl/err.h>
 #include "client_list.h"
 
+#define KB (1024)
+#define MB (KB * KB)
+#define MAX_RESPONSE_SIZE_BUFFER 1 * MB // 1
 #define MAX_HOSTNAME_SIZE 256
+#define MAX_RESPONSE_HEADER 1 * MB
 
 // Represents an SSL connection
 typedef struct {
@@ -20,14 +24,21 @@ typedef struct {
    SSL *client_ssl; // Its corresponding client's socket
    SSL *ssl;  // SSL context for secure communication
    char hostname[MAX_HOSTNAME_SIZE];
+   char url[8 * KB];
    int header_parsed;
    size_t content_length;
    size_t bytes_received;
    int chunked;
    int keep_alive;
+   char *llm_buffer;
+   size_t llm_bytes_received;
+   size_t llm_content_length;
+   size_t llm_header_length;
+   int llm_header_received;
+   int llm_transfer_encoded;
 } server_node;
 
-server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname);
+server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname, char *url);
 
 /* start_proxy
    Starts the proxy so that it is actively listening at portno.

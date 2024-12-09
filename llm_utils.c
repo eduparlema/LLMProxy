@@ -3,6 +3,8 @@
 #include <string.h>
 #include <curl/curl.h>
 
+#include "wikipedia.h"
+
 // LLM Endpoint
 const char *url = "https://a061igc186.execute-api.us-east-1.amazonaws.com/dev";
 
@@ -31,16 +33,16 @@ void llmproxy_request(char *model, char *system, char *query, char *response_bod
                         "}";
 
     // JSON data to send in the POST request
-    char request[4096];
-    memset(request, 0, 4096);
+    char request[1 * MB];
+    memset(request, 0, 1 * MB);
     snprintf(request,
              sizeof(request),
              request_fmt,
              model,
              system,
-             query,
+             escape_json_string(query),
              0.0,
-             1,
+             0,
              "GenericSession");
 
 

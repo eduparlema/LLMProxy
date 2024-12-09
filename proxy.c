@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -18,15 +19,154 @@
 #include "client_list.h"
 #include "hashmap_proxy.h"
 #include "llm_utils.h"
+#include "wikipedia.h"
+#include <json-c/json.h> 
 
-#define KB (1024)
-#define MB (KB * KB)
-#define MAX_RESPONSE_SIZE 1 * MB // 10 MB + 50 bytes for the Age:
 #define MAX_HOSTNAME_SIZE 256
 #define PORT_SIZE 6
 #define DEFAULT_PORT 443
 #define DEFAULT_MAX_AGE 300
 #define MAX_CLIENTS 541 // Max number of clients
+#define MAX_LLM_BUFFER 10 * MB
+
+// Function to replace '\n' with '<br>' in the text
+char* replace_newlines_with_br(const char* text) {
+    size_t length = strlen(text);
+    size_t extra_space = 0;
+
+    // Count occurrences of '\n'
+    for (size_t i = 0; i < length; ++i) {
+        if (text[i] == '\n') {
+            extra_space += 3; // "<br>" is 4 chars, replacing '\n' takes +3 chars
+        }
+    }
+
+    // Allocate new buffer
+    char* result = malloc(length + extra_space + 1);
+    if (!result) {
+        fprintf(stderr, "Failed to allocate memory for newline replacement.\n");
+        return NULL;
+    }
+
+    // Replace '\n' with '<br>'
+    char* dest = result;
+    for (size_t i = 0; i < length; ++i) {
+        if (text[i] == '\n') {
+            strcpy(dest, "<br>");
+            dest += 4;
+        } else {
+            *dest++ = text[i];
+        }
+    }
+    *dest = '\0';
+
+    return result;
+} 
+
+char *compress_gzip(const char *input, size_t input_size, size_t *compressed_size) {
+    z_stream strm = {0};
+    if (deflateInit2(&strm, Z_BEST_COMPRESSION, Z_DEFLATED, 16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return NULL;
+    }
+
+    // Allocate a buffer for compressed output
+    size_t output_size = compressBound(input_size);
+    char *output = malloc(output_size);
+    if (!output) {
+        deflateEnd(&strm);
+        return NULL;
+    }
+
+    strm.next_in = (Bytef *)input;
+    strm.avail_in = input_size;
+    strm.next_out = (Bytef *)output;
+    strm.avail_out = output_size;
+
+    int ret = deflate(&strm, Z_FINISH);
+    if (ret != Z_STREAM_END) {
+        free(output);
+        deflateEnd(&strm);
+        return NULL;
+    }
+
+    // Resize output to the actual compressed size
+    *compressed_size = strm.total_out;
+    output = realloc(output, *compressed_size);
+
+    deflateEnd(&strm);
+    return output;
+}
+
+#include <zlib.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+char *decompress_gzip(const char *input, size_t input_size, size_t *decompressed_length) {
+    z_stream strm = {0};
+    if (inflateInit2(&strm, 16 + MAX_WBITS) != Z_OK) { // 16 + MAX_WBITS enables gzip decoding
+        return NULL;
+    }
+
+    // Allocate a buffer for decompressed output
+    size_t output_size = input_size * 3; // Initial guess for decompressed size
+    char *output = malloc(output_size);
+    if (!output) {
+        inflateEnd(&strm);
+        return NULL;
+    }
+
+    strm.next_in = (Bytef *)input;
+    strm.avail_in = input_size;
+    strm.next_out = (Bytef *)output;
+    strm.avail_out = output_size;
+
+    int ret;
+    while ((ret = inflate(&strm, Z_NO_FLUSH)) == Z_OK) {
+        if (strm.avail_out == 0) {
+            // Buffer is too small, double the buffer size
+            output_size *= 2;
+            char *new_output = realloc(output, output_size);
+            if (!new_output) {
+                free(output);
+                inflateEnd(&strm);
+                return NULL;
+            }
+            output = new_output;
+
+            // Update the output pointers
+            strm.next_out = (Bytef *)(output + strm.total_out);
+            strm.avail_out = output_size - strm.total_out;
+        }
+    }
+
+    if (ret != Z_STREAM_END) {
+        free(output);
+        inflateEnd(&strm);
+        return NULL;
+    }
+
+    // Resize the output buffer to the actual decompressed size
+    *decompressed_length = strm.total_out;
+    char *final_output = realloc(output, *decompressed_length + 1); // +1 for null terminator
+    if (final_output) {
+        final_output[*decompressed_length] = '\0'; // Null-terminate the string
+        output = final_output;
+    }
+
+    inflateEnd(&strm);
+    return output;
+}
+
+// Function to check if a string contains "content-encoding: gzip" (case-insensitive)
+int check_content_encoding_gzip(const char *buffer) {
+    const char *header = "content-encoding: gzip";
+    const char *found = strcasestr(buffer, "content-encoding");
+    if (found && strcasestr(found, "gzip")) {
+        return 1; // Found gzip encoding
+    }
+    return 0; // No gzip encoding
+}
 
 int master_socketfd; // master socket
 int fd_max;//
@@ -194,8 +334,14 @@ int find_max_fd(fd_set *set, int max_possible_fd) {
     return max_fd;
 }
 
-server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname){
+server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname, char *url){
     server_node *node = (server_node *) malloc(sizeof(server_node));
+    node->llm_buffer = (char *) malloc(MAX_LLM_BUFFER); 
+    node->llm_bytes_received = 0;
+    node->llm_header_received = 0;
+    node->llm_content_length = 0;
+    node->llm_header_length = 0;
+    node->llm_transfer_encoded = 0;
     node->sockfd = sockfd;
     node->clientfd = clientfd;
     node->client_ssl = client_ssl;
@@ -206,6 +352,14 @@ server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *
     node->chunked = 0;
     node->keep_alive = 1;
     strncpy(node->hostname, hostname, MAX_HOSTNAME_SIZE);
+    
+    if (url) {
+        strncpy(node->url, url, strlen(url));
+        node->url[strlen(url)] = '\0';
+    } else {
+        strncpy(node->url, "NOURL", strlen("NOURL"));
+        node->url[strlen("NOURL")] = '\0';
+    }
 
     return node;
 }
@@ -360,10 +514,10 @@ SSLConnection create_client_socket(struct sockaddr_in server_addr, int portno, c
     return connection;
 }
 
-int get_content_length(client_node *client) {
-    char *content_length_str = strstr(client->request_buffer, "Content-Length:");
+int get_content_length(char *buffer) {
+    char *content_length_str = strstr(buffer, "Content-Length:");
     if (!content_length_str) {
-        content_length_str = strstr(client->request_buffer, "content-length:");
+        content_length_str = strstr(buffer, "content-length:");
     }
 
     if (!content_length_str) {
@@ -433,6 +587,47 @@ int get_hostname_and_port(const char *request, char *hostname, size_t hostname_s
     return 0; // Success
 }
 
+/**
+ * Extracts the full URL from an HTTP GET request.
+ *
+ * @param httpRequest The HTTP request string to parse for the URL.
+ * @return A dynamically allocated string containing the URL from the GET request,
+ *         or NULL on error.
+ *
+ * This function searches for the "GET" method in the HTTP request and extracts
+ * the URL that follows.
+ * If the "GET " or " HTTP" markers are not found, the function logs an error
+ * and returns NULL.
+ */
+char* getURLFromRequest(const char httpRequest[]) {
+    // Create a local copy of the httpRequest
+    char requestCopy[MAX_REQUEST_SIZE];
+    strncpy(requestCopy, httpRequest, MAX_REQUEST_SIZE - 1);
+    requestCopy[MAX_REQUEST_SIZE - 1] = '\0';
+
+    // Find the first occurrence of "GET "
+    char *GetLine = strstr(requestCopy, "GET ");
+    if (GetLine == NULL) {
+        printf("GET line not found in the request.\n");
+        return NULL;
+    }
+
+     // Move past "GET " to the actual URL
+    GetLine += strlen("GET ");
+
+    // Find the end of the URL (' HTTP')
+    char *endOfGetLine = strstr(GetLine, " HTTP");
+    if (endOfGetLine != NULL) {
+        *endOfGetLine = '\0';
+    } else {
+        printf("getURLFromRequest - End of GET line not found.\n");
+        return NULL;
+    }
+
+    // Return a copy of the URL
+    return strdup(GetLine);
+}
+
 int handle_request(client_node *client, fd_set *master_set, client_list *cli_list,
                     hashmap_proxy *clilist_hashmap, SSL_CTX *client_ctx, hashmap_proxy *server_hashmap) {
 
@@ -471,8 +666,14 @@ int handle_request(client_node *client, fd_set *master_set, client_list *cli_lis
 
     printf("Request forwarded to the server!\n");
 
+    // get url from request
+    char *url = getURLFromRequest(client->request_buffer);
+    if (url) {
+        printf("ADDING A REQUEST URL!\n");
+        printf("THIS IS THE REQUEST URL: %s\n", url);
+    }
     // create server node
-    server_node *server = create_server_node(server_connection.sockfd, client->socketfd, client->ssl, server_connection.ssl, hostname);
+    server_node *server = create_server_node(server_connection.sockfd, client->socketfd, client->ssl, server_connection.ssl, hostname, url);
     // add server to hashmap
     if (insert_into_hashmap_proxy(server_hashmap, server_connection.sockfd, server) < 0) {
         fprintf(stderr, "ERROR inserting server node into hashmap.\n");
@@ -489,7 +690,7 @@ int handle_request(client_node *client, fd_set *master_set, client_list *cli_lis
     client->header_received = 0;
     client->header_length = 0;
     client->content_length = 0;
-    memset(client->request_url, 0, MAX_URL_LENGTH);
+    memset(client->request_url, 0, 8 * KB);
 
     printf("Created server node successfully!\n");
     FD_SET(server->sockfd, master_set);
@@ -545,7 +746,7 @@ int handle_request_buffer(char *request_buffer, int buffer_size, client_node *cl
             fwrite(client->request_buffer, 1, client->header_length, stdout);
             printf("---------------------------\n");
 
-            client->content_length = get_content_length(client);
+            client->content_length = get_content_length(client->request_buffer);
             if (client->content_length == -1) {
                 char *transfer_encoding = strstr(client->request_buffer, "Transfer-Encoding:");
                 if (!transfer_encoding) {
@@ -614,6 +815,26 @@ int handle_request_buffer(char *request_buffer, int buffer_size, client_node *cl
     }
 
     return 0;
+}
+
+void reset_llm_variables(server_node *server) {
+    // Reset LLM variables
+    server->llm_bytes_received = 0;
+    server->llm_header_received = 0;
+    server->llm_content_length = 0;
+    server->llm_header_length = 0;
+    server->llm_transfer_encoded = 0;
+    memset(server->llm_buffer, 0, MAX_LLM_BUFFER);
+}
+
+void close_server_connection(server_node *server, hashmap_proxy *server_hashmap, char *response_buffer, fd_set *master_set) {
+    printf("SSL FREEING SOCKET FD %d!\n", server->sockfd);
+    SSL_free(server->ssl);
+    printf("CLOSING SERVERSOCKET FD %d!\n", server->sockfd);
+    close(server->sockfd);
+    remove_from_hashmap_proxy(server_hashmap, server->sockfd);
+    free(response_buffer);
+    FD_CLR(server->sockfd, master_set);
 }
 
 void close_client_connection(client_node *client, fd_set *master_set, client_list *cli_list,
@@ -864,9 +1085,9 @@ int handle_non_ssl_request(char *request_buffer, int client_socketfd, hashmap_pr
     }
     printf("Request forwarded to the server!\n");
 
-    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate 10MB
+    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE_BUFFER); // Allocate 10MB
     // read response from the server
-    int response_size = read_from_socket_simple(server_socketfd, response_buffer, MAX_RESPONSE_SIZE, 0);
+    int response_size = read_from_socket_simple(server_socketfd, response_buffer, MAX_RESPONSE_SIZE_BUFFER, 0);
     if (response_size < 0) {
         close(server_socketfd);
         return -1;
@@ -943,6 +1164,74 @@ int parse_http_headers(const char *response, size_t response_size, server_node *
     free(headers);
     return 0;
 }
+
+char* adjust_content_length(char* server_response, size_t response_length, size_t adjustment) {
+    if (!server_response) {
+        fprintf(stderr, "Invalid server response\n");
+        return NULL;
+    }
+
+    // Locate "Content-Length" header (case-insensitive search)
+    const char* content_length_header = strcasestr(server_response, "Content-Length:");
+    if (!content_length_header) {
+        fprintf(stderr, "Content-Length header not found\n");
+        return server_response;
+    }
+
+    // Parse the original Content-Length value
+    const char* value_start = content_length_header + strlen("Content-Length:");
+    char* value_end;
+    size_t original_length = strtoul(value_start, &value_end, 10);
+
+    if (value_start == value_end) {
+        fprintf(stderr, "Failed to parse Content-Length value\n");
+        return server_response;
+    }
+
+    // Calculate the new Content-Length value
+    size_t new_content_length = original_length + adjustment;
+
+    // Locate the body start position
+    const char* body_start = strstr(server_response, "\r\n\r\n");
+    if (!body_start) {
+        fprintf(stderr, "Malformed HTTP response: no body found\n");
+        return server_response;
+    }
+    body_start += 4; // Skip "\r\n\r\n"
+
+    // Allocate memory for the new response
+    size_t new_response_length = response_length + adjustment;
+    char* new_response = malloc(new_response_length + 1); // +1 for safety null terminator
+    if (!new_response) {
+        perror("Failed to allocate memory for new response");
+        return server_response;
+    }
+
+    // Copy up to the Content-Length header
+    size_t header_length = content_length_header - server_response;
+    memcpy(new_response, server_response, header_length);
+
+    // Write the updated Content-Length header
+    int header_written = snprintf(new_response + header_length, new_response_length - header_length, 
+                                   "Content-Length: %zu\r\n", new_content_length);
+    if (header_written < 0 || (size_t)header_written >= new_response_length - header_length) {
+        fprintf(stderr, "Failed to write updated Content-Length header\n");
+        free(new_response);
+        return server_response;
+    }
+
+    // Copy the rest of the headers and the body
+    const char* after_header = value_end + 2; // Skip "\r\n" after Content-Length value
+    size_t remaining_length = response_length - (after_header - server_response);
+    memcpy(new_response + header_length + header_written, after_header, remaining_length);
+
+    // Null-terminate for safety (if treating as string later)
+    new_response[new_response_length] = '\0';
+
+    return new_response;
+}
+
+
 
 int start_proxy(int portno) {
     printf("[start_proxy] Proxy started!\n");
@@ -1212,7 +1501,7 @@ int start_proxy(int portno) {
                     printf("HANDLING A SERVER CONNECTION FD %d!\n", i);
                     server_node *server = get_from_hashmap_proxy(server_hashmap, i);
                     printf("Got server with hostname %s and fd %d from hashmap!\n", server->hostname, i);
-                    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE); // Allocate 1MB
+                    char *response_buffer = (char *) malloc(MAX_RESPONSE_SIZE_BUFFER); // Allocate 1MB
                     printf("Allocated response buffer!\n");
                     size_t response_size = 0;
 
@@ -1226,7 +1515,7 @@ int start_proxy(int portno) {
                     if (server->ssl) {
                         printf("SSL state: %s\n", SSL_state_string(server->ssl));
                         printf("[start_proxy] Reading an HTTPS request from server!\n");
-                        response_size = SSL_read(server->ssl, response_buffer, MAX_RESPONSE_SIZE);
+                        response_size = SSL_read(server->ssl, response_buffer, MAX_RESPONSE_SIZE_BUFFER);
                         printf("Read %zd bytes from server!\n", response_size);
 
                         printf("[start_proxy] Response size: %zd\n", response_size);
@@ -1241,28 +1530,290 @@ int start_proxy(int portno) {
                             continue;
                         }
 
-                        // Check if the request is for a Reddit post
-                        if (strstr(CURRENT_LINK, "reddit.com") && strstr(CURRENT_LINK, "/comments/")) {
-                            printf("[start_proxy] Detected Reddit post request.\n");
+                        // Get the server's url
+                        printf("This is the hostname: %s\n", server->hostname);
+                        printf("This is the URL: %s\n", server->url);
 
-                            // Extract Reddit post content
-                            char post_content[4096] = {0};
-                            if (extract_reddit_post_content(RESPONSE_BUFFER, post_content, sizeof(post_content)) < 0) {
-                                fprintf(stderr, "[handle_request] Failed to extract Reddit post content.\n");
-                                free(RESPONSE_BUFFER);
-                                CLOSE_THE_CONNECTION
-                                continue;
+
+                        int time_to_send_header = 0;
+                        int is_wiki = 0;
+                        int last_response = 0;
+                        char summary[4096] = {0};
+                        // Check if the request is for a Wikipeida post
+                        if (strstr(server->hostname, "wikipedia.org") && strstr(server->url, "/wiki/")) {
+                            is_wiki = 1;
+                            printf(">>>>>>>>\n");
+                            printf("[start_proxy] Detected Reddit post request.\n");
+                            printf("This is the URL: %s\n", server->url);
+                            printf(">>>>>>>>\n");
+
+                            size_t bytes_to_copy = 0;
+                            size_t bytes_read_from_buffer = 0;
+
+                            if (!server->llm_header_received) {
+                                char *header_end = strstr(response_buffer, "\r\n\r\n");
+
+                                if (header_end) {
+                                    // Calculate the header length
+                                    size_t header_length = header_end - response_buffer + 4 + server->llm_bytes_received;
+                                    bytes_to_copy = header_length - server->llm_bytes_received;
+                                    // Copy to client's buffer
+                                    memcpy(server->llm_buffer + server->llm_bytes_received, response_buffer, bytes_to_copy);
+                                    server->llm_bytes_received = header_length;
+                                    server->llm_header_length = header_length;
+                                    server->llm_header_received = 1;
+                                    bytes_read_from_buffer = bytes_to_copy;
+                                    printf("Reddit Header Info: INFO After copying header:\n");
+                                    printf("Reddit Header Info: Bytes_to_copy: %zd\n", bytes_to_copy);
+                                    printf("Reddit Header Info: header_length: %zd\n", server->llm_header_length);
+                                    printf("Reddit Header Info: bytes_received: %zd\n", server->llm_bytes_received);
+                                    printf("Reddit Header Info: Buffer size: %zu\n", response_size);
+
+                                    printf("We found a complete header!\n");
+                                    printf("WIKIPEDIA RESPONSE HEADER: \n");
+                                    printf("---------------------------\n");
+                                    fwrite(server->llm_buffer, 1, server->llm_bytes_received, stdout);
+                                    printf("---------------------------\n");
+
+                                    time_to_send_header = 1;
+                                    server->llm_content_length = get_content_length(server->llm_buffer);
+                                    printf("ServerLLM Content Length is: %zu\n", server->llm_content_length);
+                                    if (server->llm_content_length == -1) {
+                                        char *transfer_encoding = strstr(server->llm_buffer, "Transfer-Encoding:");
+                                        if (!transfer_encoding) {
+                                            transfer_encoding = strstr(server->llm_buffer, "transfer-encoding:");
+                                        }   
+
+                                        if (transfer_encoding) {
+                                            server->llm_transfer_encoded = 1;
+                                            printf("TODO: HADLE TRANSFER ENCODING!\n");
+                                        } else {
+                                            printf("Request with no content, just header!\n");
+                                        }
+                                    } 
+                                } else {
+                                    printf("Incomplete header found!\n");
+                                    // If no complete header found, accumulate bytes to client
+                                    bytes_to_copy = response_size; // Copy entire buffer
+                                    memcpy(server->llm_buffer + server->llm_bytes_received, response_buffer, bytes_to_copy);
+                                    server->llm_bytes_received += bytes_to_copy;
+                                    printf("Incomplete Reddit Header Info: INFO After copying header:\n");
+                                    printf("Incomplete Reddit Header Info: Bytes_to_copy: %zd\n", bytes_to_copy);
+                                    printf("Incomplete Reddit Header Info: llm_bytes_received: %zd\n", server->llm_bytes_received);
+                                    printf("Incomplete Reddit Header Info: Buffer size: %zu\n", response_size);
+                                    continue;
+                                }
                             }
 
-                            // Generate summary
-                            char summary[4096] = {0};
-                            llmproxy_request("4o-mini", "Summarize this post", post_content, summary);
-                            printf("Response: %s\n", summary);
+                            if (server->llm_transfer_encoded) {
+                                printf("This WIKIPEDIA RESPONSE server has a transfer encoding awaiting \n");
+                            } else if (server->llm_content_length > 0) {
+                                printf("This WIKIPEDIA RESPONSE server has a content length in the header \n");
+
+                                // If we reach this point is because we have a complete header
+                                if (server->llm_header_length == 0) {
+                                    printf("LLM SANITY CHECK, SHOULD NEVER GET HERE!\n");
+                                }
+
+                                size_t bytes_remaining = server->llm_header_length + server->llm_content_length - server->llm_bytes_received;
+
+                                bytes_to_copy = bytes_remaining < response_size - bytes_read_from_buffer ? bytes_remaining : response_size - bytes_read_from_buffer;
+
+                                printf("WIKIPEDIA RESPONSE : Bytes_to_copy: %zd\n", bytes_to_copy);
+                                printf("WIKIPEDIA RESPONSE : Bytes remaining: %zd\n", bytes_remaining);
+                                printf("WIKIPEDIA RESPONSE : header_length: %zu\n", server->llm_header_length);
+                                printf("WIKIPEDIA RESPONSE : content_length: %zu\n", server->llm_content_length);
+                                printf("WIKIPEDIA RESPONSE : bytes_received: %zd\n", server->llm_bytes_received);
+                                printf("WIKIPEDIA RESPONSE : Buffer size: %zu\n", response_size);
+
+                                memcpy(server->llm_buffer + server->llm_bytes_received, response_buffer + bytes_read_from_buffer, bytes_to_copy);
+
+                                printf("THIS IS THE TOTAL CONTENT WE MUST READ: %zd\n", server->llm_header_length + server->llm_content_length);
+                                printf("WIKIPEDIA CONTENT: Header Length: %zu!\n", server->llm_header_length);
+                                printf("WIKIPEDIA CONTENT: Content Length: %zu!\n", server->llm_content_length);
+                                printf("WIKIPEDIA CONTENT: Current Response Size: %zd!\n", bytes_to_copy);
+                                printf("WIKIPEDIA CONTENT: Bytes Received So far: %zd!\n", server->llm_bytes_received);
+
+                                server->llm_bytes_received += bytes_to_copy;
+
+                                if (server->llm_bytes_received == server->llm_header_length + server->llm_content_length) {
+                                    printf("Got a complete request - SEND TO LLM!\n");
+                                    // TODO: SEND TO LLM 
+                                    char *decompressed = decompress_gzip_dynamic(server->llm_buffer + server->llm_header_length, server->llm_content_length);
+                                    // TODO: SEND TO Front End 
+                                    printf("Bytes Received: %zu\n", server->llm_bytes_received);
+                                    if (decompressed) {
+                                        printf("This is the length: %lu\n", strlen(decompressed));  
+                                    }
+                                    printf("This is the data: \n%s\n", server->llm_buffer);   
+                                    printf("This is the decompressed CLEANED UP data: \n%s\n", decompressed);   
+                                    llmproxy_request("4o-mini", "In no more than than 3 paragraphs, first Summarize this wikipedia page, then fact check the wrong claims if there is any.", decompressed, summary);
+                                    printf("LLM Response: %s\n", summary);  
+                                    last_response = 1;
+                                    // send_modal_message(server->client_ssl, "Congrats", "Eduardito");                             
+                                    
+                                    if (decompressed) {
+                                        free(decompressed);
+                                    }
+                                    // TODO: RESET 
+                                } else {
+                                    printf("LLM: Waiting for the Complete Response to send to LLM\n");
+                                }
+                            }
                         }
 
                         // Forward response to client
                         printf("[start_proxy] Forwarding response to client...\n");
-                        int res = SSL_write(server->client_ssl, response_buffer, response_size);
+                        int res;
+                        if (is_wiki) {
+                            if (last_response) {
+                                printf("Wiki: Sending Content in last packet.\n");
+                                printf("Wiki: server->llm_content_length: %zu\n", server->llm_content_length);
+                                printf("Wiki: server->llm_header_length: %zu\n", server->llm_header_length);
+                                printf("Wiki: server->llm_buffer: %s\n", server->llm_buffer);
+
+                                // Parse the JSON content in summary_content
+                                struct json_object* parsed_json = json_tokener_parse(summary);
+                                if (!parsed_json) {
+                                    fprintf(stderr, "Wiki: Failed to parse summary JSON.\n");
+                                    continue;
+                                }
+
+                                // Extract the "result" field
+                                struct json_object* result_field;
+                                if (!json_object_object_get_ex(parsed_json, "result", &result_field)) {
+                                    fprintf(stderr, "Wiki: 'result' field not found in JSON.\n");
+                                    json_object_put(parsed_json); // Free JSON object memory
+                                    continue;
+                                }
+
+                                const char* clean_summary = json_object_get_string(result_field);
+
+                                // Replace '\n' with '<br>' to preserve line breaks in HTML
+                                char* formatted_summary = replace_newlines_with_br(clean_summary);
+                                if (!formatted_summary) {
+                                    json_object_put(parsed_json); // Free JSON object memory
+                                    return 1;
+                                }
+
+                                // Define the HTML template
+                                const char* append_html_template = 
+                                    "<div id='modal' style='position:fixed; top:50%%; left:50%%; transform:translate(-50%%, -50%%); "
+                                    "background:white; border:1px solid #ccc; padding:20px; z-index:1000; width:80%%; max-width:600px;'>"
+                                    "<div style='position:relative;'>"
+                                    "<button id='close-modal' style='position:absolute; top:10px; right:10px; background:none; border:none; font-size:16px; cursor:pointer;'>&times;</button>"
+                                    "<h2>Ismail & Eduardo's TLDR & Fact-Checker</h2>"
+                                    "<p>%s</p>"
+                                    "</div>"
+                                    "<script>"
+                                    "document.getElementById('close-modal').onclick = function() {"
+                                    "   document.getElementById('modal').style.display = 'none';"
+                                    "};"
+                                    "</script>"
+                                    "</div>";
+
+
+                                // Calculate the required buffer size
+                                size_t append_html_length = strlen(formatted_summary) + strlen(append_html_template) + 1;
+
+                                // Dynamically allocate memory for the combined HTML
+                                char* append_html = malloc(append_html_length);
+                                if (!append_html) {
+                                    fprintf(stderr, "Wiki: Failed to allocate memory for append_html.\n");
+                                    json_object_put(parsed_json); // Free JSON object memory
+                                    continue;
+                                }
+
+                                // Safely construct the HTML string
+                                snprintf(append_html, append_html_length, append_html_template, formatted_summary);
+
+                                // The rest of the logic for appending and sending the modified content remains the same
+                                char* modified_buffer = NULL;
+                                size_t modified_length = 0;
+
+                                // Check if gzip encoding is present
+                                if (strstr(server->llm_buffer, "content-encoding: gzip")) {
+                                    printf("Wiki: gzip encoding found.\n");
+
+                                    size_t decompressed_length = 0;
+                                    char* decompressed = decompress_gzip(
+                                        server->llm_buffer + server->llm_header_length,
+                                        server->llm_content_length,
+                                        &decompressed_length
+                                    );
+
+                                    if (decompressed) {
+                                        // Append the HTML to the decompressed content
+                                        size_t new_length = decompressed_length + strlen(append_html);
+                                        char* updated_content = malloc(new_length + 1);
+                                        if (!updated_content) {
+                                            fprintf(stderr, "Wiki: Failed to allocate memory for updated content.\n");
+                                            free(decompressed);
+                                            free(append_html);
+                                            json_object_put(parsed_json); // Free JSON object memory
+                                            continue;
+                                        }
+                                        snprintf(updated_content, new_length + 1, "%s%s", decompressed, append_html);
+
+                                        // Compress back to gzip
+                                        modified_buffer = compress_gzip(updated_content, new_length, &modified_length);
+                                        if (!modified_buffer) {
+                                            fprintf(stderr, "Wiki: Failed to compress updated content.\n");
+                                        }
+
+                                        free(updated_content);
+                                        free(decompressed);
+                                    } else {
+                                        fprintf(stderr, "Wiki: Failed to decompress content.\n");
+                                    }
+                                } else {
+                                    // Handle unencoded content
+                                    size_t new_length = server->llm_content_length + strlen(append_html);
+                                    modified_buffer = malloc(new_length + 1);
+                                    if (!modified_buffer) {
+                                        fprintf(stderr, "Wiki: Failed to allocate memory for modified buffer.\n");
+                                        free(append_html);
+                                        json_object_put(parsed_json); // Free JSON object memory
+                                        continue;
+                                    }
+                                    snprintf(modified_buffer, new_length + 1, "%s%s", 
+                                        server->llm_buffer + server->llm_header_length, 
+                                        append_html);
+                                    modified_length = new_length;
+                                }
+
+                                // Send the modified buffer
+                                if (modified_buffer) {
+                                    int res = SSL_write(server->client_ssl, modified_buffer, modified_length);
+                                    if (res <= 0) {
+                                        fprintf(stderr, "Wiki: Failed to send modified content.\n");
+                                    }
+                                    free(modified_buffer);
+                                } else {
+                                    fprintf(stderr, "Wiki: No modified buffer to send.\n");
+                                }
+
+                                // Free dynamically allocated memory
+                                free(append_html);
+                                json_object_put(parsed_json); // Free JSON object memory
+
+                                reset_llm_variables(server);
+                            }
+
+                            if (time_to_send_header) {
+                                // Write Header 
+                                printf("Wiki: Header before: %s\n", server->llm_buffer);
+                                char *temp_header = adjust_content_length(server->llm_buffer, server->llm_header_length, 4096);
+                                printf("Wiki: Header after: %s\n", temp_header);
+                                res = SSL_write(server->client_ssl, temp_header, server->llm_header_length);
+                                printf("Wiki: Edu: Sent the modified Header.\n");
+                                // res = SSL_write(server->client_ssl, response_buffer + server->llm_header_length, response_size - server->llm_header_length);
+                                // printf("Edu: Sent what's left after.\n");
+                            } 
+                        } else {
+                            res = SSL_write(server->client_ssl, response_buffer, response_size);
+                        }
+
                         if (res <= 0) {
                             if (res < 0) {
                                 printf("[start_proxy] Issue doing SSL_write to client_ssl...\n");
@@ -1283,47 +1834,6 @@ int start_proxy(int portno) {
                             continue;
                         }
 
-                        // if (!server->header_parsed) {
-                        //     if (parse_http_headers(response_buffer, response_size, server) == 0) {
-                        //         server->header_parsed = 1;
-                        //         printf("Header parsed! Content-Length: %zu, Chunked: %d, Alive: %d\n",
-                        //             server->content_length, server->chunked, server->keep_alive);
-                        //     } else {
-                        //         free(response_buffer);
-                        //         continue;
-                        //     }
-                        // }
-
-                        // if (server->chunked) {
-                        //     // TODO: CLOSE WHEN LAST CHUNKED RECEIVED!
-                        // } else if (!server->keep_alive && server->content_length > 0) {
-                        //     server->bytes_received += response_size;
-                        //     if (server->bytes_received >= server->content_length) {
-                        //         printf("Full response received (Content-Length matched).\n");
-                        //         close(server->sockfd);
-                        //         if (server->ssl) {
-                        //             printf("ABOUT TO FREE SSL!\n");
-                        //             SSL_free(server->ssl);
-                        //             printf("FREED SSL server!\n");
-                        //         }
-                        //         remove_from_hashmap_proxy(server_hashmap, server->sockfd);
-                        //         printf("REMOVED SERVER FROM HASHMAP\n");
-                        //         FD_CLR(server->sockfd, &master_set);
-                        //     }
-                        // }
-                        // else {
-                        //     printf("Neither content length nor transfer-encoding found!\n");
-                        //     printf("----------------------------------");
-                        //     printf("Header: \n%s\n", response_buffer);
-                        //     printf("----------------------------------");
-                        //     // printf("Closing server socket!\n");
-                        //     // close(server->sockfd);
-                        //     // if (server->ssl) {
-                        //     //     SSL_free(server->ssl);
-                        //     // }
-                        //     // remove_from_hashmap_proxy(server_hashmap, server->sockfd);
-                        //     // FD_CLR(server->sockfd, &master_set);
-                        // }
 
                     }
 

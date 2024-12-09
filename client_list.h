@@ -12,7 +12,7 @@
 #include "cache.h"
 
 #define DEFAULT_TIMEOUT 600
-#define MAX_URL_LENGTH 2000
+#define MAX_URL_LENGTH 8 * KB
 #define KB (1024)
 #define MAX_REQUEST_SIZE (16 * KB) // 16 kilobytes
 #define MAX_REQUEST_BUFFER_SIZE (16 * KB) 
@@ -25,7 +25,7 @@ typedef struct client_node {
     char IP_addr[INET_ADDRSTRLEN];    // Client IP address
     time_t last_activity;             // Timestamp of the last activity for timeout handling
     SSL *ssl;                         // SSL context for secure communication, NULL for non-SSL
-    char request_url[MAX_URL_LENGTH]; // URL requested by the client
+    char request_url[8 * KB]; // URL requested by the client
     char *request_buffer;             // Buffer to store the request header
     size_t bytes_received;            // How much of the header has been received
     int header_received;              // Flag to indicate if the header is fully received

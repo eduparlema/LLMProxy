@@ -74,7 +74,7 @@ client_node *create_client_node(int socketfd) {
     node->socketfd = socketfd;
     memset(&node->IP_addr, 0, INET_ADDRSTRLEN);
     node->last_activity = time(NULL);
-    memset(&node->request_url, 0, MAX_URL_LENGTH);
+    memset(&node->request_url, 0, 8 * KB);
     node->request_buffer = (char *) malloc(1 * MB);
     if (!node->request_buffer) {
         perror("[create_client_node] ERROR allocating space for request_buffer");
