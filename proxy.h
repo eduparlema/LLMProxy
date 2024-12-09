@@ -64,7 +64,9 @@ SSLConnection create_client_socket(struct sockaddr_in server_addr, int portno, c
    client - client node making the request.
    Returns 0 on success, -1 on failure.
 */
-int handle_request_buffer(char *request_buffer, int buffer_len, client_node *client);
+int handle_request_buffer(char *request_buffer, int buffer_size, client_node *client,
+                            fd_set *master_set, client_list *cli_list, hashmap_proxy *clilist_hashmap,
+                             SSL_CTX *client_ctx, hashmap_proxy *server_hashmap);
 
 /* read_from_server
    Reads data from the server over an SSL connection into a buffer.

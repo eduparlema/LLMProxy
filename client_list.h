@@ -15,6 +15,7 @@
 #define MAX_URL_LENGTH 2000
 #define KB (1024)
 #define MAX_REQUEST_SIZE (16 * KB) // 16 kilobytes
+#define MAX_REQUEST_BUFFER_SIZE (16 * KB) 
 
 // Note: Since TCP ensures that we receive the data in order, a client can
 // have at most one incomplete message at a time.
@@ -28,6 +29,8 @@ typedef struct client_node {
     char *request_buffer;             // Buffer to store the request header
     size_t bytes_received;            // How much of the header has been received
     int header_received;              // Flag to indicate if the header is fully received
+    int header_length;                // Keep track of header length of a request
+    int content_length;               // Keeps track of content length of a request 
     struct client_node *next;         // Pointer to the next client in the list
     struct client_node *prev;         // Pointer to the previous client in the list
 } client_node;
