@@ -11,5 +11,6 @@ int main(int argc, char *argv[]) {
     }
     
     int portno = atoi(argv[1]);
-    start_proxy(portno);
+    int ret = start_proxy(portno);
+    printf("PROXY returned %d\n", ret);
 }

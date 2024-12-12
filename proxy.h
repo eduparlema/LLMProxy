@@ -6,11 +6,28 @@
 #include <openssl/err.h>
 #include "client_list.h"
 
+#define MAX_HOSTNAME_SIZE 256
+
 // Represents an SSL connection
 typedef struct {
-    int sockfd;  // Socket file descriptor
-    SSL *ssl;    // SSL context for secure communication
+   int sockfd;  // Socket file descriptor
+   SSL *ssl;    // SSL context for secure communication
 } SSLConnection;
+
+typedef struct {
+   int sockfd; // Socket file descriptor
+   int clientfd;
+   SSL *client_ssl; // Its corresponding client's socket
+   SSL *ssl;  // SSL context for secure communication
+   char hostname[MAX_HOSTNAME_SIZE];
+   int header_parsed;
+   size_t content_length;
+   size_t bytes_received;
+   int chunked;
+   int keep_alive;
+} server_node;
+
+server_node *create_server_node(int sockfd, int clientfd, SSL *client_ssl, SSL *ssl, char *hostname);
 
 /* start_proxy
    Starts the proxy so that it is actively listening at portno.
@@ -47,18 +64,9 @@ SSLConnection create_client_socket(struct sockaddr_in server_addr, int portno, c
    client - client node making the request.
    Returns 0 on success, -1 on failure.
 */
-int handle_request_buffer(char *request_buffer, int buffer_len, client_node *client);
-
-/* handle_request
-   Processes the client's request. Either retrieves the requested data
-   from the cache or fetches it from the server.
-   client - client node making the request.
-   client_socketfd - socket file descriptor for the client connection.
-   cache - cache structure for storing/retrieving responses.
-   ssl_ctx - SSL context used for establishing secure connections.
-   Returns 0 on success, -1 on failure.
-*/
-int handle_request(client_node *client, int client_socketfd, cache *cache, SSL_CTX *ssl_ctx);
+int handle_request_buffer(char *request_buffer, int buffer_size, client_node *client,
+                            fd_set *master_set, client_list *cli_list, hashmap_proxy *clilist_hashmap,
+                             SSL_CTX *client_ctx, hashmap_proxy *server_hashmap);
 
 /* read_from_server
    Reads data from the server over an SSL connection into a buffer.
@@ -67,6 +75,7 @@ int handle_request(client_node *client, int client_socketfd, cache *cache, SSL_C
    buffer_size - size of the buffer.
    Returns the number of bytes read, or -1 on error.
 */
-ssize_t read_from_server(SSL *ssl, char *buffer, ssize_t buffer_size);
+ssize_t read_from_server(server_node *server, char *buffer, ssize_t buffer_size,
+                            hashmap_proxy *server_hashmap, fd_set *master_set);
 
 #endif

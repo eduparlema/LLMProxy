@@ -6,6 +6,8 @@ LDFLAGS = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto -fsanitize=address
 # Change the C / LD flags with the path to your openssl eduardito
 # I kept fsanitize address to debug issues with memory
 
+
+
 a.out: $(obj)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
